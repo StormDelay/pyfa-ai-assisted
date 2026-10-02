@@ -10,7 +10,11 @@ our eve.db.
 from __future__ import annotations
 
 import contextlib
+import os
+import shutil
 import sqlite3
+import subprocess
+from datetime import datetime
 from pathlib import Path
 
 _dir: Path | None = None
@@ -133,3 +137,73 @@ def target_profiles() -> dict[str, dict]:
                         "speed": p._maxVelocity, "signature": p._signatureRadius,
                         "radius": p._radius}
             for p in _session().query(TargetProfile).all() if p.rawName}
+
+
+def _pyfa_running() -> bool:
+    # ponytail: sees the packaged pyfa.exe only, not Pyfa run from source
+    # (python pyfa.py); add a cmdline scan if someone runs it that way.
+    if os.name == "nt":
+        out = subprocess.run(["tasklist", "/FI", "IMAGENAME eq pyfa.exe", "/NH"],
+                             capture_output=True, text=True,
+                             creationflags=subprocess.CREATE_NO_WINDOW).stdout
+        return "pyfa.exe" in out.lower()
+    return subprocess.run(["pgrep", "-ix", "pyfa"], capture_output=True).returncode == 0
+
+
+def _free_name(session, wanted: str) -> str:
+    from eos.saveddata.fit import Fit
+    taken = {name.casefold() for (name,) in session.query(Fit.name)}
+    name, n = wanted, 2
+    while name.casefold() in taken:
+        name, n = f"{wanted} ({n})", n + 1
+    return name
+
+
+def export_fit(eft_text: str, name: str | None = None) -> dict:
+    """Insert eft_text as a new fit in the user's Pyfa. Never changes an existing row.
+
+    The caller has already checked the EFT strictly (store.export_to_pyfa).
+    """
+    from eos.const import ImplantLocation
+    from eos.db import migration
+    from eos.saveddata.character import Character
+    from eos.saveddata.damagePattern import DamagePattern
+    from service.port import Port
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import Session
+
+    from pyfa_mcp import eosboot
+
+    db = _user_db()
+    if _pyfa_running():
+        raise PyfaDataError("Pyfa is running: ask the user to close it, then export again")
+    engine = create_engine(f"sqlite:///{db}")
+    try:
+        have, want = migration.getVersion(engine), migration.getAppVersion()
+        if have != want:
+            raise PyfaDataError(
+                f"not exported: the user's Pyfa database is version {have}, but Pyfa "
+                f"{eosboot.pyfa_version()} inside pyfa-mcp writes version {want}. Give the "
+                "user the EFT text (get_fit) to import in Pyfa instead")
+        with Session(bind=engine, autoflush=False, expire_on_commit=False) as session:
+            all5 = session.query(Character).filter(Character.savedName == "All 5").first()
+            if all5 is None:
+                raise PyfaDataError("the user's Pyfa database has no 'All 5' character; "
+                                    "start Pyfa once, close it, and export again")
+            fit = Port.importAuto(eft_text)[2][0]
+            fit.name = _free_name(session, name or fit.name)
+            # What Port.importFitFromBuffer sets on every fit it imports.
+            fit.character = all5
+            fit.damagePattern = DamagePattern.getDefaultBuiltin()
+            fit.implantLocation = ImplantLocation.FIT
+            stamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+            backup = db.with_name(f"saveddata_pyfa-mcp-backup_{stamp}.db")
+            # Pyfa is not running, so a plain copy is exact (as Pyfa's own
+            # migration backups are): restoring is a rename.
+            shutil.copy2(db, backup)
+            session.add(fit)
+            session.commit()
+            return {"id": f"pyfa:{fit.ID}", "name": fit.name,
+                    "ship": fit.ship.item.name, "backup": str(backup)}
+    finally:
+        engine.dispose()

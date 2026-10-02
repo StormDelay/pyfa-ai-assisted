@@ -35,6 +35,8 @@ pyfa-mcp computes EVE Online fits with Pyfa's own engine.
   Tell the user about warnings, and mention the assumptions that matter.
 - Use compare_fits to evaluate many candidate fits in one call.
 - Call status() if numbers look wrong; relay any warning it reports.
+- export_to_pyfa writes into the user's own Pyfa. Call it only when the
+  user explicitly asks for that; otherwise give them the EFT text.
 """
 
 app = MCPServer("pyfa", instructions=INSTRUCTIONS)
@@ -202,6 +204,15 @@ def get_fit(fit: str) -> dict:
 def delete_fit(fit: str) -> dict:
     """Delete a fit stored in the server's database, by name or id. Pyfa fits are read-only."""
     return store.delete_fit(fit)
+
+
+@app.tool()
+@_tool
+def export_to_pyfa(fit: str, name: str | None = None) -> dict:
+    """Write a fit into the user's own Pyfa as a NEW fit. Only when the user explicitly
+    asks. Refuses while Pyfa runs; backs up Pyfa's database first; never overwrites
+    (a taken name gets " (2)"). Returns the new fit's pyfa: id and the backup path."""
+    return store.export_to_pyfa(fit, name)
 
 
 def main(argv: list[str] | None = None) -> None:

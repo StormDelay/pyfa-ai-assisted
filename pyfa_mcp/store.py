@@ -77,6 +77,15 @@ def resolve_eft(ref: str) -> str:
     return eft.export_fit(Fit.getInstance().getFit(_find(ref).ID))
 
 
+def _refuse_dropped(fit, what: str) -> None:
+    """A fit Pyfa trimmed is not what the user wrote: delete it and say what went."""
+    if fit.dropped_modules:
+        from service.fit import Fit
+        Fit.deleteFit(fit.ID)
+        left_out = "; ".join(f"{d.name} ({d.reason})" for d in fit.dropped_modules)
+        raise StoreError(f"{what}: Pyfa left out {left_out}; fix the fit first")
+
+
 def save_fit(ref: str, name: str) -> dict:
     name = name.strip()
     if not name:
@@ -84,11 +93,7 @@ def save_fit(ref: str, name: str) -> dict:
     if any(f.name.casefold() == name.casefold() for f in _stored()):
         raise StoreError(f"a stored fit is already named '{name}'; delete it or pick another name")
     fit = eft.import_fit(resolve_eft(ref), name=name)
-    if fit.dropped_modules:
-        from service.fit import Fit
-        Fit.deleteFit(fit.ID)
-        left_out = "; ".join(f"{d.name} ({d.reason})" for d in fit.dropped_modules)
-        raise StoreError(f"not saved: Pyfa left out {left_out}; fix the fit first")
+    _refuse_dropped(fit, "not saved")
     return _entry(fit)
 
 
@@ -122,3 +127,13 @@ def delete_fit(ref: str) -> dict:
     entry = _entry(fit)
     Fit.deleteFit(fit.ID)
     return {"deleted": entry}
+
+
+def export_to_pyfa(ref: str, name: str | None = None) -> dict:
+    """Write a fit into the user's Pyfa as a new fit, after the same strict checks as save_fit."""
+    from service.fit import Fit
+    text = resolve_eft(ref)
+    fit = eft.import_fit(text, temp=True)  # unknown names raise here
+    _refuse_dropped(fit, "not exported")
+    Fit.deleteFit(fit.ID)
+    return pyfadata.export_fit(text, name.strip() if name and name.strip() else None)
