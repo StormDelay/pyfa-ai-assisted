@@ -2,10 +2,11 @@
 
 One row per client: where its config lives, the directory that says it is
 installed, the key its servers sit under, and whether entries carry
-"type": "stdio". Every write keeps everything else in the file, backs the
-file up first (<file>.pyfa-mcp.bak) and replaces it atomically. A file this
-cannot parse is the user's: it is refused, never rewritten, and the error
-carries the snippet to add by hand.
+"type": "stdio". Every write keeps everything else in the file (values, line
+endings, a symlink), keeps the file as it was before pyfa-mcp first changed it
+in <file>.pyfa-mcp.bak, and replaces it atomically. A file this cannot parse,
+or could not write back unchanged, is the user's: it is refused, never
+rewritten, and the error carries the snippet to add by hand.
 """
 from __future__ import annotations
 
@@ -119,14 +120,48 @@ def _by_hand(client: Client, why: str) -> RegisterError:
                          f"Add this under \"{client.key}\" by hand:\n{by_hand}")
 
 
+def _backup(path: Path) -> None:
+    """The file as it was before pyfa-mcp first changed it: written once, never overwritten."""
+    backup = path.with_name(path.name + ".pyfa-mcp.bak")
+    if path.exists() and not backup.exists():
+        shutil.copy2(path, backup)
+
+
 def _replace(path: Path, text: str) -> None:
     """Back up, then swap the whole file: a crash mid-write must not cost other servers."""
-    if path.exists():
-        shutil.copy2(path, path.with_name(path.name + ".pyfa-mcp.bak"))
-    path.parent.mkdir(parents=True, exist_ok=True)  # only ever below an installed client
-    temp = path.with_name(path.name + ".pyfa-mcp.tmp")
-    temp.write_text(text, encoding="utf-8")
-    os.replace(temp, path)
+    target = path.resolve() if path.is_symlink() else path  # write through a dotfiles link
+    _backup(path)
+    target.parent.mkdir(parents=True, exist_ok=True)  # only ever below an installed client
+    if target.exists() and b"\r\n" in target.read_bytes():
+        text = text.replace("\r\n", "\n").replace("\n", "\r\n")  # keep the file's endings
+    temp = target.with_name(target.name + ".pyfa-mcp.tmp")
+    try:
+        temp.write_text(text, encoding="utf-8", newline="")
+        os.replace(temp, target)
+    finally:
+        temp.unlink(missing_ok=True)
+
+
+def _strict_object(pairs: list) -> dict:
+    keys = [key for key, _ in pairs]
+    if len(keys) != len(set(keys)):
+        raise ValueError("a key appears twice, which a rewrite would collapse")
+    return dict(pairs)
+
+
+def _finite(text: str) -> float:
+    value = float(text)
+    if value in (float("inf"), float("-inf")):
+        raise ValueError(f"{text} is out of range and would come back as Infinity")
+    return value
+
+
+def _no_constant(name: str):
+    raise ValueError(f"{name} is not JSON")
+
+
+def _dump(root: dict) -> str:
+    return json.dumps(root, indent=2, ensure_ascii=False) + "\n"
 
 
 def _read_text(client: Client) -> str:
@@ -142,9 +177,12 @@ def _read_json(client: Client) -> tuple[dict, dict]:
     """(whole file, its servers object, attached to it); empty when there is no file yet."""
     text = _read_text(client)
     try:
-        root = json.loads(text) if text.strip() else {}
+        root = json.loads(text, object_pairs_hook=_strict_object, parse_float=_finite,
+                          parse_constant=_no_constant) if text.strip() else {}
     except json.JSONDecodeError as exc:
         raise _by_hand(client, f"not plain JSON ({exc.msg}, line {exc.lineno})") from exc
+    except ValueError as exc:
+        raise _by_hand(client, f"cannot be rewritten unchanged ({exc})") from exc
     if not isinstance(root, dict):
         raise _by_hand(client, "not a JSON object")
     servers = root.setdefault(client.key, {})
@@ -258,10 +296,8 @@ def add(client: Client) -> str:
             want = _merged(existing, entry)
             _write_toml(client, _retarget(text, want), want)
         else:
-            kept = _without_ours(text)
-            if kept and not kept.endswith("\n"):
-                kept += "\n"
-            _write_toml(client, kept + ("\n" if kept.strip() else "") + _toml_table(entry), entry)
+            kept = _without_ours(text).rstrip("\n")
+            _write_toml(client, (kept + "\n\n" if kept.strip() else "") + _toml_table(entry), entry)
         return f"registered in {client.config}; restart {client.label} to use it"
     root, servers = _read_json(client)
     existing = servers.get(NAME)
@@ -273,14 +309,23 @@ def add(client: Client) -> str:
     if cli:
         # Running Claude Code sessions rewrite ~/.claude.json; let Claude Code
         # make the change itself. Backed up all the same.
-        if client.config.exists():
-            shutil.copy2(client.config, client.config.with_name(client.config.name + ".pyfa-mcp.bak"))
+        _backup(client.config)
         if NAME in servers:
             _claude(cli, "mcp", "remove", NAME, "--scope", "user")
-        _claude(cli, "mcp", "add-json", NAME, json.dumps(entry), "--scope", "user")
+        try:
+            _claude(cli, "mcp", "add-json", NAME, json.dumps(entry), "--scope", "user")
+        except RegisterError as exc:
+            if NAME not in servers:
+                raise
+            try:  # the old entry is already removed: do not leave the user with none
+                _claude(cli, "mcp", "add-json", NAME, json.dumps(servers[NAME]), "--scope", "user")
+            except RegisterError:
+                raise RegisterError(f"{exc}; the previous entry could not be put back either "
+                                    f"(it is in {client.config}.pyfa-mcp.bak)") from exc
+            raise RegisterError(f"{exc}; the previous entry was put back") from exc
         return "registered through the claude CLI; restart Claude Code to use it"
     servers[NAME] = entry
-    _replace(client.config, json.dumps(root, indent=2) + "\n")
+    _replace(client.config, _dump(root))
     return f"registered in {client.config}; restart {client.label} to use it"
 
 
@@ -291,18 +336,19 @@ def remove(client: Client) -> str:
         text, servers = _read_toml(client)
         if NAME not in servers:
             return "not registered"
-        _write_toml(client, _without_ours(text), None)
+        kept = _without_ours(text).rstrip("\n")
+        _write_toml(client, kept + "\n" if kept else "", None)
         return f"removed from {client.config}"
     root, servers = _read_json(client)
     if NAME not in servers:
         return "not registered"
     cli = _claude_cli() if client.label == "Claude Code" else None
     if cli:
-        shutil.copy2(client.config, client.config.with_name(client.config.name + ".pyfa-mcp.bak"))
+        _backup(client.config)
         _claude(cli, "mcp", "remove", NAME, "--scope", "user")
         return "removed through the claude CLI"
     del servers[NAME]
-    _replace(client.config, json.dumps(root, indent=2) + "\n")
+    _replace(client.config, _dump(root))
     return f"removed from {client.config}"
 
 
@@ -322,7 +368,9 @@ def run(register_name: str | None, unregister_name: str | None,
             print("no MCP client found; paste the output of --print-config into yours")
             return 0
     elif unregister_name == "all":
-        names = [n for n, c in table.items() if registered(c)]
+        # Only entries that start this pyfa-mcp: uninstalling must not remove a checkout's.
+        ours = command()[0]
+        names = [n for n, c in table.items() if (registered(c) or {}).get("command") == ours]
     elif wanted in table:
         names = [wanted]
     else:

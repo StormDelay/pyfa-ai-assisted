@@ -349,3 +349,112 @@ def test_codex_reregister_keeps_what_the_user_added(roots, monkeypatch):
     register.add(c)
     assert register.registered(c) == {"command": "D:\new\pyfa-mcp.exe",
                                       "args": ["--pyfa-dir", "E:/pyfa"], "env": {"X": "1"}}
+
+
+def test_the_backup_is_the_file_from_before_pyfa(roots, monkeypatch):
+    c = _install("claude-desktop")
+    c.config.write_text('{"mcpServers": {}, "mine": 1}', encoding="utf-8")
+    register.add(c)
+    monkeypatch.setattr(register, "command", lambda: ("D:\new\pyfa-mcp.exe", []))
+    register.add(c)
+    register.remove(c)
+    backup = c.config.with_name(c.config.name + ".pyfa-mcp.bak")
+    assert backup.read_text(encoding="utf-8") == '{"mcpServers": {}, "mine": 1}'
+
+
+def test_a_failed_write_leaves_no_temp_file(roots, monkeypatch):
+    c = _install("cursor")
+    c.config.write_text('{"mcpServers": {}}', encoding="utf-8")
+
+    def full_disk(src, dst):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(register.os, "replace", full_disk)
+    with pytest.raises(OSError):
+        register.add(c)
+    assert c.config.read_text(encoding="utf-8") == '{"mcpServers": {}}'
+    assert not list(c.config.parent.glob("*.pyfa-mcp.tmp"))
+
+
+def test_line_endings_are_kept(roots):
+    codex = _install("codex")
+    codex.config.write_bytes(CODEX.encode())  # LF
+    register.add(codex)
+    assert b"\r" not in codex.config.read_bytes()
+    cursor = _install("cursor")
+    cursor.config.write_bytes(b'{\r\n  "mcpServers": {}\r\n}\r\n')  # CRLF
+    register.add(cursor)
+    data = cursor.config.read_bytes()
+    assert data.count(b"\r\n") == data.count(b"\n")
+
+
+def test_codex_blank_lines_do_not_pile_up(roots):
+    c = _install("codex")
+    c.config.write_text(CODEX, encoding="utf-8")
+    for _ in range(3):
+        register.add(c)
+        assert "\n\n\n" not in c.config.read_text(encoding="utf-8")
+        register.remove(c)
+    assert c.config.read_text(encoding="utf-8") == CODEX
+
+
+def test_json_values_survive_the_rewrite(roots):
+    c = _install("cursor")
+    c.config.write_text('{"mcpServers": {}, "note": "café"}', encoding="utf-8")
+    register.add(c)
+    assert '"café"' in c.config.read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize("text", [
+    '{"mcpServers": {}, "a": 1, "a": 2}',      # duplicate keys would collapse
+    '{"mcpServers": {}, "big": 1e400}',        # would come back as Infinity
+])
+def test_json_that_would_not_round_trip_is_left_alone(roots, text):
+    c = _install("cursor")
+    c.config.write_text(text, encoding="utf-8")
+    with pytest.raises(register.RegisterError, match="pyfa"):
+        register.add(c)
+    assert c.config.read_text(encoding="utf-8") == text
+
+
+def test_a_symlinked_config_stays_a_symlink(roots, tmp_path):
+    c = _install("cursor")
+    real = tmp_path / "dotfiles" / "mcp.json"
+    real.parent.mkdir()
+    real.write_text('{"mcpServers": {}}', encoding="utf-8")
+    try:
+        c.config.symlink_to(real)
+    except OSError:
+        pytest.skip("this account cannot create symlinks")
+    register.add(c)
+    assert c.config.is_symlink()
+    assert register.NAME in json.loads(real.read_text(encoding="utf-8"))["mcpServers"]
+
+
+def test_claude_cli_puts_the_old_entry_back_when_adding_fails(roots, monkeypatch):
+    c = _install("claude-code")
+    old = {"type": "stdio", "command": "old.exe", "args": []}
+    c.config.write_text(json.dumps({"mcpServers": {"pyfa": old}}), encoding="utf-8")
+    calls = []
+
+    def fake_run(argv, **kwargs):
+        calls.append(argv[1:])
+        new_add = argv[2] == "add-json" and json.loads(argv[4]) != old
+        return subprocess.CompletedProcess(argv, 1 if new_add else 0, "", "boom")
+
+    monkeypatch.setattr(register, "_claude_cli", lambda: "C:\bin\claude.exe")
+    monkeypatch.setattr(register.subprocess, "run", fake_run)
+    with pytest.raises(register.RegisterError, match="previous entry was put back"):
+        register.add(c)
+    assert calls[-1] == ["mcp", "add-json", "pyfa", json.dumps(old), "--scope", "user"]
+
+
+def test_unregister_all_keeps_a_checkout_s_entry(roots):
+    cursor, vscode = _install("cursor"), _install("vscode")
+    register.add(cursor)
+    checkout = {"type": "stdio", "command": "D:\dev\.venv\Scripts\python.exe",
+                "args": ["-m", "pyfa_mcp"]}
+    vscode.config.write_text(json.dumps({"servers": {"pyfa": checkout}}), encoding="utf-8")
+    assert register.run(None, "all", None) == 0
+    assert register.registered(cursor) is None
+    assert register.registered(vscode) == checkout
