@@ -308,3 +308,10 @@ def test_describe_without_pyfa(booted):
     described = C.describe()
     assert described["your_damage_profiles"] == []
     assert described["your_target_profiles"] == []
+
+
+def test_more_drones_than_can_launch(temp_fits):
+    fit = temp_fits("[Vexor, spare drones]\n\n\n\n\n\nHobgoblin II x8\n")
+    applied = C.apply(fit, C.parse(None), temp_fits)
+    assert fit.drones[0].amountActive == 5
+    assert applied["drones"] == ["Hobgoblin II: 5 of 8 launched (default)"]

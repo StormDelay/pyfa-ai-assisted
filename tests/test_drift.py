@@ -93,3 +93,36 @@ def test_evaluation_warns_about_unhandled_effects(booted, zealot_eft, monkeypatc
     monkeypatch.setattr(drift, "_unhandled_by_type", lambda: {zealot.ID: ["someEffect"]})
     warnings = evaluate.evaluate(zealot_eft, None)["warnings"]
     assert any("Zealot" in w and "someEffect" in w for w in warnings)
+
+
+def test_an_error_reply_keeps_the_last_answer(fresh_cache, monkeypatch):
+    class Reply:
+        ok, status_code = False, 403
+
+        def json(self):
+            return {"message": "API rate limit exceeded"}
+
+        def raise_for_status(self):
+            raise OSError("403 rate limited")
+
+    import requests
+    monkeypatch.setattr(drift, "_fetch_tag", _real_fetch)
+    monkeypatch.setattr(requests, "get", lambda *a, **k: Reply())
+    fresh_cache.write_text(json.dumps({drift.PYFA_REPO: {"tag": "v2.70.0", "checked": 0}}))
+    assert drift.latest_release(drift.PYFA_REPO) == "v2.70.0"
+    assert json.loads(fresh_cache.read_text())[drift.PYFA_REPO]["tag"] == "v2.70.0"
+
+
+def test_a_repo_without_releases_is_none(monkeypatch):
+    class Reply:
+        ok, status_code = False, 404
+
+        def raise_for_status(self):
+            raise AssertionError("a 404 is an answer: the repo has no release")
+
+    import requests
+    monkeypatch.setattr(requests, "get", lambda *a, **k: Reply())
+    assert _real_fetch(drift.OWN_REPO) is None
+
+
+_real_fetch = drift._fetch_tag  # captured at import, before the autouse offline patch

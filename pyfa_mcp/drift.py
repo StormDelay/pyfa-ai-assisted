@@ -46,11 +46,17 @@ def installed_pyfa_version() -> str | None:
 
 
 def _fetch_tag(repo: str) -> str | None:
-    """The latest non-prerelease tag; None if the repo has no release (404)."""
+    """The latest non-prerelease tag; None if the repo has no release (404).
+
+    Any other error reply (rate limit, 5xx) raises, so the last answer is kept.
+    """
     import requests
     reply = requests.get(f"https://api.github.com/repos/{repo}/releases/latest",
                          headers={"Accept": "application/vnd.github+json"}, timeout=5)
-    return reply.json().get("tag_name") if reply.ok else None
+    if reply.status_code == 404:
+        return None
+    reply.raise_for_status()
+    return reply.json().get("tag_name")
 
 
 def latest_release(repo: str) -> str | None:

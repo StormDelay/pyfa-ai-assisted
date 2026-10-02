@@ -45,7 +45,8 @@ def _evaluate_parsed(ref: str, cond) -> dict:
         name, ship = fit.name, fit.ship.item.name
         effect_warnings = drift.effect_warnings(fit)
     return {"fit": name, "ship": ship, "applied": applied,
-            "warnings": warnings_for(result) + effect_warnings, **result}
+            "warnings": warnings_for(result) + effect_warnings + store.pyfa_warnings(ref),
+            **result}
 
 
 def evaluate(ref: str, raw_conditions: dict | None) -> dict:

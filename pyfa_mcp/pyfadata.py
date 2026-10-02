@@ -207,3 +207,31 @@ def export_fit(eft_text: str, name: str | None = None) -> dict:
                     "ship": fit.ship.item.name, "backup": str(backup)}
     finally:
         engine.dispose()
+
+
+def left_out(fit) -> list[str]:
+    """What a Pyfa fit has that its EFT text, and so an evaluation of it, does not carry."""
+    from eos.const import ImplantLocation
+
+    lost = []
+    if fit.mode is not None:
+        lost.append(f"tactical mode {fit.mode.item.name} (set conditions.mode)")
+    if fit.damagePattern is not None and fit.damagePattern.ID != -1:  # -1: built-in uniform
+        lost.append(f"damage profile '{fit.damagePattern.fullName}' "
+                    "(set conditions.damage_profile)")
+    if fit.targetProfile is not None:
+        lost.append(f"target profile '{fit.targetProfile.fullName}' (set conditions.target)")
+    for label, others, key in (("command fits", fit.commandFits, "command"),
+                               ("projected fits", fit.projectedFits, "projected")):
+        if others:
+            names = ", ".join(f"{f.name} (pyfa:{f.ID})" for f in others)
+            lost.append(f"{label} {names} (pass them in conditions.{key})")
+    items = [x.item.name for x in (*fit.projectedModules, *fit.projectedDrones,
+                                   *fit.projectedFighters)]
+    if items:
+        lost.append(f"projected items {', '.join(items)} (pass them in conditions.projected)")
+    if fit.implantLocation == ImplantLocation.CHARACTER and fit.character is not None \
+            and fit.character.implants:
+        names = ", ".join(i.item.name for i in fit.character.implants)
+        lost.append(f"its character's implants {names} (add them to the EFT)")
+    return lost

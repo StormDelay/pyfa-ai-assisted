@@ -304,7 +304,7 @@ def _launch_drones(fit) -> list[str]:
     asked about with its drones out, so launch them in EFT order.
     """
     bandwidth = fit.ship.getModifiedItemAttr("droneBandwidth") or 0
-    limit = fit.extraAttributes["maxActiveDrones"]
+    limit = int(fit.extraAttributes["maxActiveDrones"])  # eos keeps it as a float
     used, active, echo = 0.0, 0, []
     for drone in fit.drones:
         each = drone.getModifiedItemAttr("droneBandwidthUsed") or 0

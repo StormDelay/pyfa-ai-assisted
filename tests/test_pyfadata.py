@@ -93,3 +93,26 @@ def test_newer_pyfa_database_is_refused(pyfa_home):
     _sql(pyfa_home, "PRAGMA user_version = 999")
     with pytest.raises(pyfadata.PyfaDataError, match="update pyfa-mcp"):
         store.list_fits(source="pyfa")
+
+
+def test_pyfa_fit_with_brackets_in_its_name_evaluates(pyfa_home, no_fits_left):
+    _sql(pyfa_home, "UPDATE fits SET name = '[REKTD] Home Zealot'")
+    assert evaluate.evaluate("pyfa:[REKTD] Home Zealot", None)["fit"] == "[REKTD] Home Zealot"
+
+
+def test_what_eft_cannot_carry_is_a_warning(pyfa_home, no_fits_left):
+    plain = evaluate.evaluate("pyfa:Home Zealot", None)["warnings"]
+    assert not [w for w in plain if "pyfa:" in w]  # uniform, no target, nothing projected
+    _sql(pyfa_home,
+         "CREATE TEMP TABLE twin AS SELECT * FROM fits",
+         "UPDATE twin SET ID = ID + 1000, name = 'Helper'",
+         "INSERT INTO fits SELECT * FROM twin",
+         "UPDATE fits SET damagePatternID = (SELECT ID FROM damagePatterns WHERE name = 'Home EM'),"
+         " targetResistsID = (SELECT ID FROM targetResists WHERE name = 'Home Target')"
+         " WHERE name = 'Home Zealot'",
+         "INSERT INTO projectedFits (sourceID, victimID, amount, active) SELECT h.ID, z.ID, 1, 1"
+         " FROM fits h, fits z WHERE h.name = 'Helper' AND z.name = 'Home Zealot'")
+    warnings = " ".join(evaluate.evaluate("pyfa:Home Zealot", None)["warnings"])
+    for lost in ("Home EM", "Home Target", "Helper"):
+        assert lost in warnings
+    assert "Home EM" in " ".join(store.get_fit("pyfa:Home Zealot")["warnings"])

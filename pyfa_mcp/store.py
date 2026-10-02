@@ -67,6 +67,20 @@ def _find_pyfa(rest: str):
     return _pick(pyfadata.fits(), rest, "Pyfa fit", 'list_fits(source="pyfa")', PYFA_PREFIX)
 
 
+def _lost_warnings(fit) -> list[str]:
+    lost = pyfadata.left_out(fit)
+    if not lost:
+        return []
+    return [f"{PYFA_PREFIX}{fit.ID} '{fit.name}' in the user's Pyfa also has "
+            + "; ".join(lost) + ". EFT does not carry these, so they were not applied"]
+
+
+def pyfa_warnings(ref: str) -> list[str]:
+    """For a pyfa: reference, what the evaluation leaves out; [] for anything else."""
+    rest = None if eft.looks_like_eft(ref) else _pyfa_ref(ref)
+    return [] if rest is None else _lost_warnings(_find_pyfa(rest))
+
+
 def resolve_eft(ref: str) -> str:
     if eft.looks_like_eft(ref):
         return ref
@@ -113,7 +127,7 @@ def get_fit(ref: str) -> dict:
     rest = _pyfa_ref(ref)
     if rest is not None:
         fit = _find_pyfa(rest)
-        return {**_pyfa_entry(fit), "eft": eft.export_fit(fit)}
+        return {**_pyfa_entry(fit), "eft": eft.export_fit(fit), "warnings": _lost_warnings(fit)}
     from service.fit import Fit
     fit = _find(ref)
     return {**_entry(fit), "eft": eft.export_fit(Fit.getInstance().getFit(fit.ID))}
