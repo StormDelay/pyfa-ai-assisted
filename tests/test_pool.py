@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from pyfa_mcp import bench, pool
+from tests import wyvern
 
 ROOT = Path(__file__).resolve().parent.parent
 KEYS = ["tank.ehp.total", "offense.dps.total"]
@@ -100,3 +101,66 @@ def test_idle_shutdown_spares_a_running_search(small_pool, zealot_eft):
     finally:
         with pool._lock:
             pool._busy -= 1
+
+
+@pytest.fixture
+def no_kept_bench(booted):
+    yield
+    pool._drop_kept()
+
+
+def _empty(*positions):
+    return [([bench.Edit(("module", p), None)], None) for p in positions]
+
+
+def test_a_worker_reuses_its_bench_across_jobs(zealot_eft, no_fits_left, no_kept_bench):
+    first, second = _empty(0, 1, 2), _empty(3, 4, 5)
+    fresh = bench.run_trials(zealot_eft, None, KEYS, first + second)
+    assert pool._work(zealot_eft, None, KEYS, first) == fresh[:3]
+    opened = pool._kept[1]
+    assert pool._work(zealot_eft, None, KEYS, second) == fresh[3:]
+    assert pool._kept[1] is opened
+
+
+def test_a_new_fit_or_extra_conditions_drop_the_kept_bench(zealot_eft, no_fits_left,
+                                                           no_kept_bench):
+    rifter = "[Rifter, x]\nDamage Control II\n"
+    extra = [([], None), ([], {"command": [{"fit": wyvern.PHENOMENA}]})]
+    fresh_rifter = bench.run_trials(rifter, None, KEYS, _empty(0))
+    fresh_extra = bench.run_trials(zealot_eft, None, KEYS, extra)
+    pool._work(zealot_eft, None, KEYS, _empty(0))
+    opened = pool._kept[1]
+    assert pool._work(rifter, None, KEYS, _empty(0)) == fresh_rifter
+    assert pool._kept[1] is not opened and pool._kept[1]._ref == rifter
+    assert pool._work(zealot_eft, None, KEYS, extra) == fresh_extra
+    assert pool._kept is None
+
+
+def test_a_failed_job_never_leaves_its_bench_behind(zealot_eft, no_fits_left, no_kept_bench,
+                                                    monkeypatch):
+    jobs = _empty(0, 1)
+    fresh = bench.run_trials(zealot_eft, None, KEYS, jobs)
+    real = bench.Bench._apply_one
+    calls = []
+
+    def flaky(self, edit):
+        calls.append(edit)
+        if len(calls) == 2:
+            raise RuntimeError("eos broke mid-trial")
+        return real(self, edit)
+
+    monkeypatch.setattr(bench.Bench, "_apply_one", flaky)
+    with pytest.raises(RuntimeError, match="mid-trial"):
+        pool._work(zealot_eft, None, KEYS, jobs)
+    assert pool._kept is None
+    monkeypatch.setattr(bench.Bench, "_apply_one", real)
+    assert pool._work(zealot_eft, None, KEYS, jobs) == fresh
+
+
+def test_small_jobs_use_a_running_pool(small_pool, monkeypatch, zealot_eft, no_fits_left):
+    pool.run(zealot_eft, None, KEYS, _empty(0))  # INLINE_LIMIT 0: starts the pool
+    monkeypatch.setattr(pool, "INLINE_LIMIT", 300)
+    sent = []
+    monkeypatch.setattr(bench, "run_trials", lambda *a: sent.append(a) or [])
+    assert len(pool.run(zealot_eft, None, KEYS, _empty(1, 2))) == 2
+    assert not sent  # went to the workers, not in-process

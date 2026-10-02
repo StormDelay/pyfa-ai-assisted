@@ -252,3 +252,32 @@ def test_optimize_refuses_module_states_and_bad_allow(booted, zealot_eft):
         search.optimize_fit(zealot_eft, "tank.ehp.total", top_k=0)
     with pytest.raises(ValueError, match="budget: use"):
         search.optimize_fit(zealot_eft, "tank.ehp.total", budget={"second": 5})
+
+
+def test_optimize_validates_budget_constraints_and_heat(booted, zealot_eft):
+    for budget in ({"seconds": 0}, {"evaluations": -1}, {"seconds": "60"}):
+        with pytest.raises(ValueError, match="budget"):
+            search.optimize_fit(zealot_eft, "tank.ehp.total", budget=budget)
+    with pytest.raises(ValueError, match="navigation.max_speed gte '100'"):
+        search.optimize_fit(zealot_eft, "tank.ehp.total",
+                            constraints=[{"stat": "navigation.max_speed", "gte": "100"}])
+    with pytest.raises(ValueError, match="validity.valid lte True"):
+        search.optimize_fit(zealot_eft, "tank.ehp.total",
+                            constraints=[{"stat": "validity.valid", "lte": True}])
+    for states in ([], ["overheated"]):
+        with pytest.raises(ValueError, match='must include "active"'):
+            search.optimize_fit(zealot_eft, "tank.ehp.total", allow={"module_states": states})
+
+
+OVER_PG = "[Rifter, x]\n\n" + "Large Shield Extender II\n" * 3
+
+
+def test_an_empty_best_says_why(booted, no_fits_left):
+    short = search.optimize_fit(OVER_PG, "tank.ehp.total", budget={"evaluations": 1})
+    assert short["best"] == []
+    assert short["reason"].startswith("the budget ran out (evaluations) before any valid fit")
+    stuck = search.optimize_fit(OVER_PG, "tank.ehp.total", allow={"slots": ["low"]},
+                                locked=OVER_PG)
+    assert stuck["best"] == [] and stuck["search"]["converged"] is True
+    assert stuck["reason"] == ("every fit tried was invalid; "
+                               "most common problem: powergrid over by #")

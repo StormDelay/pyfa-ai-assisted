@@ -443,6 +443,9 @@ def _allow(allow: dict | None) -> dict:
                          "(subsystems are kept as fitted)")
     if [s for s in merged["module_states"] if s not in ("active", "overheated")]:
         raise ValueError('allow.module_states: use "active" and/or "overheated"')
+    if "active" not in merged["module_states"]:
+        raise ValueError('allow.module_states must include "active": a module is overheated '
+                         'on top of being active, so heat alone is not a choice')
     return merged
 
 
@@ -460,7 +463,11 @@ def _constraints(raw) -> list[tuple]:
         if (not isinstance(c, dict) or not isinstance(c.get("stat"), str) or len(ops) != 1
                 or set(c) - {"stat", *ops}):
             raise ValueError('constraints: each is {"stat": key, "eq"|"lte"|"gte": value}')
-        out.append((c["stat"], ops[0], c[ops[0]]))
+        target = c[ops[0]]
+        if not isinstance(target, int | float) or (isinstance(target, bool) and ops[0] != "eq"):
+            raise ValueError(f"constraints: {c['stat']} {ops[0]} {target!r}: the target "
+                             "must be a number (true/false only with eq)")
+        out.append((c["stat"], ops[0], target))
     return out
 
 
@@ -488,10 +495,11 @@ def _fitted(ref: str) -> tuple[str, list[str]]:
 
 
 class _Search:
-    def __init__(self, ref, raw, key, sign, cons, budget, places, place_key, options):
+    def __init__(self, ref, raw, key, sign, cons, budget, deadline, places, place_key,
+                 options):
         self.ref, self.raw, self.key, self.sign, self.cons = ref, raw, key, sign, cons
         self.keys = list(dict.fromkeys([key, *(s for s, _, _ in cons), *_FITTING_KEYS]))
-        self.deadline = time.monotonic() + budget["seconds"]
+        self.deadline = deadline
         self.left = budget["evaluations"]
         self.places, self.place_key, self.options = places, place_key, options
         self.full = options  # set pieces are found here, whatever pruning dropped
@@ -501,6 +509,7 @@ class _Search:
         self.stopped_by: str | None = None
         self.stack = contextlib.ExitStack()  # closes the in-process bench
         self.bench = None
+        self.problems: Counter = Counter()  # why fits were invalid, numbers blanked
 
     def canonical(self, state) -> tuple:
         return tuple(sorted((self.place_key[w], o.sort_key()) for w, o in state.items()
@@ -531,13 +540,15 @@ class _Search:
             self.evaluations += len(batch)
             for (canon, state), trial in zip(batch, trials):
                 self.seen[canon] = (self._score(trial), state, trial.values)
+                self.problems.update(re.sub(r"\d+(\.\d+)?", "#", p)
+                                     for p in trial.problems or [trial.error] if p)
         if over:
             self.stopped_by = over
             raise _OutOfBudget
         return [self.seen[self.canonical(s)] for s in states]
 
     def _trials(self, edits: list) -> list:
-        if pool.size() and len(edits) >= pool.INLINE_LIMIT:
+        if pool.size() and (len(edits) >= pool.INLINE_LIMIT or pool.running()):
             return _run(self.ref, self.raw, self.keys, [(e, None) for e in edits])
         if self.bench is None:  # in-process: one bench for the whole search
             self.bench = self.stack.enter_context(bench.Bench(self.ref, self.raw))
@@ -694,6 +705,9 @@ def optimize_fit(fit: str, objective: str, raw_conditions: dict | None = None,
         raise ValueError("top_k must be at least 1")
     if set(budget or {}) - {"evaluations", "seconds"}:
         raise ValueError('budget: use {"evaluations": n, "seconds": s}')
+    for name, value in (budget or {}).items():
+        if not isinstance(value, int | float) or isinstance(value, bool) or value <= 0:
+            raise ValueError(f"budget.{name} must be a number above 0")
     budget = {"evaluations": 20000, "seconds": 60, **(budget or {})}
     ref, left_out = _fitted(_baseline_eft(fit))
     sources = {"module", "rig", "charge"} | ({"implant"} if allow["implants"] else set()) \
@@ -734,7 +748,8 @@ def optimize_fit(fit: str, objective: str, raw_conditions: dict | None = None,
                    "heat": " and ".join(allow["module_states"]), "left_out": left_out}
 
     sets = [c for c in found.candidates if c.group == "Implant sets"]
-    search = _Search(ref, raw, key, sign, cons, budget, places, place_key, options)
+    search = _Search(ref, raw, key, sign, cons, budget, started + budget["seconds"],
+                     places, place_key, options)
     pruned: dict = {}
     considered = options  # until pruning has run
     converged = True
@@ -789,9 +804,15 @@ def optimize_fit(fit: str, objective: str, raw_conditions: dict | None = None,
                      "stats": {k: flat[k] for k in shown if k in flat},
                      "valid": bool(flat["validity.valid"]) and holds,
                      "warnings": confirmed["result"]["warnings"]})
+    out = {"applied": applied, "best": best}
+    if not best:
+        common = search.problems.most_common(1)
+        out["reason"] = (
+            f"the budget ran out ({search.stopped_by}) before any valid fit was found"
+            if not converged else "every fit tried was invalid"
+        ) + (f"; most common problem: {common[0][0]}" if common else "")
     return {
-        "applied": applied,
-        "best": best,
+        **out,
         "considered": {pk: sorted({o.name for o in opts})
                        for pk, opts in considered.items()},
         "pruned": [{"name": n, "reason": r} for n, r in sorted(pruned.items())],

@@ -49,9 +49,10 @@ def size() -> int:
 
 
 def run(ref: str, raw_conditions: dict | None, keys: list[str], trials: list) -> list:
-    if _size == 0 or len(trials) < INLINE_LIMIT:
+    # A small job never starts the pool, but uses it when it is already running.
+    executor = _start(len(trials) >= INLINE_LIMIT) if _size else None
+    if executor is None:
         return bench.run_trials(ref, raw_conditions, keys, trials)
-    executor = _start()
     try:
         step = -(-len(trials) // (_size * 2))
         futures = [executor.submit(_work, ref, raw_conditions, keys,
@@ -75,19 +76,36 @@ def _work(ref: str, raw_conditions: dict | None, keys: list[str], trials: list) 
     key = json.dumps([ref, raw_conditions], sort_keys=True)
     extra = any(e is not None for _, e in trials)
     if _kept is not None and (_kept[0] != key or extra):
-        _kept[1].__exit__(None, None, None)
-        _kept = None
+        _drop_kept()
     if extra:
         return bench.run_trials(ref, raw_conditions, keys, trials)
     if _kept is None:
         opened = bench.Bench(ref, raw_conditions)
         _kept = (key, opened.__enter__())
-    return [_kept[1].trial(edits, keys) for edits, _ in trials]
+    try:
+        return [_kept[1].trial(edits, keys) for edits, _ in trials]
+    except BaseException:  # the fit may be left half edited: never measure on it again
+        _drop_kept()
+        raise
 
 
-def _start() -> ProcessPoolExecutor:
+def _drop_kept() -> None:
+    global _kept
+    if _kept is not None:
+        kept, _kept = _kept, None
+        kept[1].__exit__(None, None, None)
+
+
+def running() -> bool:
+    return _executor is not None
+
+
+def _start(new: bool) -> ProcessPoolExecutor | None:
+    """The running pool, started if `new`; None when it is not running and not `new`."""
     global _executor, _busy
     with _lock:
+        if _executor is None and not new:
+            return None
         _busy += 1
         if _idle is not None:
             _idle.cancel()
