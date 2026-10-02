@@ -87,9 +87,10 @@ def _own_version() -> str | None:
 
 
 def _newer(a: str | None, b: str | None) -> bool:
+    """a > b, ignoring a local part: v0.1.1+pyfa2.70.0 is release 0.1.1 built on Pyfa 2.70."""
     from packaging.version import InvalidVersion, Version
     try:
-        return bool(a and b) and Version(a) > Version(b)
+        return bool(a and b) and Version(Version(a).public) > Version(Version(b).public)
     except InvalidVersion:
         return False
 

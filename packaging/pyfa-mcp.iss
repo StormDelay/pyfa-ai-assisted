@@ -1,12 +1,16 @@
 ; Inno Setup script for the pyfa-mcp installer.
 ;
-;     "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" /DAppVersion=0.1.0 packaging\pyfa-mcp.iss
+;     "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" /DAppVersion=0.1.0 /DPyfaVersion=2.69.0 packaging\pyfa-mcp.iss
 ;
-; after building dist\pyfa-mcp with packaging\pyfa-mcp.spec. The version has
-; no default, so a build can never quietly carry a stale one.
+; after building dist\pyfa-mcp with packaging\pyfa-mcp.spec. Both versions
+; come from scripts/track_pyfa.py (version, pyfa) and have no default, so a
+; build can never quietly carry a stale one.
 
 #ifndef AppVersion
-  #error Pass /DAppVersion=x.y.z -- the release decides it, not this file
+  #error Pass /DAppVersion=x.y.z -- scripts/track_pyfa.py version
+#endif
+#ifndef PyfaVersion
+  #error Pass /DPyfaVersion=x.y.z -- scripts/track_pyfa.py pyfa
 #endif
 
 #define AppName "pyfa-mcp"
@@ -16,6 +20,7 @@
 AppId={{4C972680-9B4A-4B38-941A-23DEAE8517B6}
 AppName={#AppName}
 AppVersion={#AppVersion}
+AppVerName={#AppName} {#AppVersion} (Pyfa {#PyfaVersion})
 AppPublisher=Antoine Jacquin-Ravot
 AppSupportURL=https://github.com/StormDelay/pyfa-ai-assisted
 DefaultDirName={autopf}\{#AppName}
@@ -25,7 +30,7 @@ PrivilegesRequired=lowest
 ArchitecturesAllowed=x64
 ArchitecturesInstallIn64BitMode=x64
 OutputDir=..\dist
-OutputBaseFilename={#AppName}-v{#AppVersion}-setup
+OutputBaseFilename={#AppName}-v{#AppVersion}-pyfa{#PyfaVersion}-setup
 Compression=lzma2/max
 SolidCompression=yes
 WizardStyle=modern

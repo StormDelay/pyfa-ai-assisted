@@ -126,3 +126,9 @@ def test_a_repo_without_releases_is_none(monkeypatch):
 
 
 _real_fetch = drift._fetch_tag  # captured at import, before the autouse offline patch
+
+
+def test_a_release_of_the_version_we_run_is_not_newer():
+    assert not drift._newer("v0.1.1+pyfa2.70.0", "0.1.1")
+    assert drift._newer("v0.1.2+pyfa2.70.0", "0.1.1")
+    assert drift._newer("v2.70.0", "v2.69.0")
