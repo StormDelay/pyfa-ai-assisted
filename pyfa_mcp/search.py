@@ -6,12 +6,15 @@ sees a number the evaluator did not produce.
 """
 from __future__ import annotations
 
+import contextlib
 import difflib
 import json
-from collections import OrderedDict
+import re
+import time
+from collections import Counter, OrderedDict
 from typing import NamedTuple
 
-from pyfa_mcp import bench, candidates, drift, eft, evaluate, pool, stats, store
+from pyfa_mcp import bench, candidates, conditions, drift, eft, evaluate, pool, stats, store
 from pyfa_mcp.bench import Edit
 
 _CACHE: OrderedDict = OrderedDict()
@@ -412,3 +415,388 @@ def marginal_swaps(fit: str, objective: str, raw_conditions: dict | None = None,
             "no_improvement_found": not improving, "warnings": warnings,
             "coverage": {"swaps_tried": len(trials), "invalid_dropped": invalid,
                          "failed": failed, "excluded": _excluded_rows(found.excluded)}}
+
+
+# --- optimize_fit ------------------------------------------------------------
+
+_ALLOW_DEFAULT = {"slots": list(_RACKS), "implants": False, "boosters": False,
+                  "module_states": ["active"]}
+_FITTING_KEYS = ("ship.cpuOutput", "ship.powerOutput", "ship.upgradeCapacity")
+_PAIR_OPTIONS = 6
+_METHOD = ("greedy seeds, then best-improvement local search over single swaps, "
+           "implant-set swaps and pair swaps")
+
+
+class _OutOfBudget(Exception):
+    pass
+
+
+def _allow(allow: dict | None) -> dict:
+    merged = {**_ALLOW_DEFAULT, **(allow or {})}
+    unknown = set(merged) - set(_ALLOW_DEFAULT)
+    if unknown:
+        raise ValueError(f"allow: unknown key '{sorted(unknown)[0]}'; "
+                         f"known: {', '.join(_ALLOW_DEFAULT)}")
+    bad = [s for s in merged["slots"] if s not in _RACKS]
+    if bad:
+        raise ValueError(f"allow.slots: '{bad[0]}' is not one of {', '.join(_RACKS)} "
+                         "(subsystems are kept as fitted)")
+    if [s for s in merged["module_states"] if s not in ("active", "overheated")]:
+        raise ValueError('allow.module_states: use "active" and/or "overheated"')
+    return merged
+
+
+def _holds(value, op: str, target) -> bool:
+    if op == "eq":
+        return value == target if isinstance(target, bool) else _zero(value - target, target)
+    slack = 1e-9 * max(1.0, abs(target))
+    return value <= target + slack if op == "lte" else value >= target - slack
+
+
+def _constraints(raw) -> list[tuple]:
+    out = []
+    for c in raw or []:
+        ops = [op for op in ("eq", "lte", "gte") if isinstance(c, dict) and op in c]
+        if (not isinstance(c, dict) or not isinstance(c.get("stat"), str) or len(ops) != 1
+                or set(c) - {"stat", *ops}):
+            raise ValueError('constraints: each is {"stat": key, "eq"|"lte"|"gte": value}')
+        out.append((c["stat"], ops[0], c[ops[0]]))
+    return out
+
+
+def _locked_counts(locked: str | None) -> tuple[Counter, dict]:
+    """How many of each item name must stay, and the names as written."""
+    counts: Counter = Counter()
+    written: dict[str, str] = {}
+    for line in (locked or "").splitlines():
+        line = line.strip()
+        if not line or line.startswith("["):
+            continue
+        name = re.sub(r"\s+x\d+$", "", line.split(",")[0].replace("/OFFLINE", "").strip())
+        counts[name.casefold()] += 1
+        written[name.casefold()] = name
+    return counts, written
+
+
+def _fitted(ref: str) -> tuple[str, list[str]]:
+    """The fit as Pyfa imports it: items it refused (a second Damage Control) would
+    leave every trial invalid, so the search starts from what was fitted."""
+    with evaluate.Scratch() as scratch:
+        fit = scratch.add_fit(ref)
+        left_out = [f"{d.name}: {d.reason}" for d in getattr(fit, "dropped_modules", ())]
+        return (eft.export_fit(fit) if left_out else ref), left_out
+
+
+class _Search:
+    def __init__(self, ref, raw, key, sign, cons, budget, places, place_key, options):
+        self.ref, self.raw, self.key, self.sign, self.cons = ref, raw, key, sign, cons
+        self.keys = list(dict.fromkeys([key, *(s for s, _, _ in cons), *_FITTING_KEYS]))
+        self.deadline = time.monotonic() + budget["seconds"]
+        self.left = budget["evaluations"]
+        self.places, self.place_key, self.options = places, place_key, options
+        self.full = options  # set pieces are found here, whatever pruning dropped
+        self.top: dict[str, list[Option]] = {}
+        self.seen: dict[tuple, tuple] = {}  # canonical state -> (score, state, values)
+        self.evaluations = 0
+        self.stopped_by: str | None = None
+        self.stack = contextlib.ExitStack()  # closes the in-process bench
+        self.bench = None
+
+    def canonical(self, state) -> tuple:
+        return tuple(sorted((self.place_key[w], o.sort_key()) for w, o in state.items()
+                            if o is not None))
+
+    def edits(self, state) -> list[Edit]:
+        return [o.edit(w) if o is not None else Edit(w, None) for w, o in state.items()]
+
+    def _score(self, trial):
+        if trial.values is None or trial.problems:
+            return None
+        broken = sum(not _holds(trial.values[s], op, x) for s, op, x in self.cons)
+        return (-broken, self.sign * trial.values[self.key])
+
+    def evaluate(self, states) -> list:
+        todo: dict[tuple, dict] = {}
+        for state in states:
+            todo.setdefault(self.canonical(state), state)
+        batch = [(c, s) for c, s in todo.items() if c not in self.seen]
+        over = None
+        if batch and time.monotonic() > self.deadline:
+            over, batch = "seconds", []
+        elif len(batch) > self.left:
+            over, batch = "evaluations", batch[:self.left]  # spend what is left
+        if batch:
+            trials = self._trials([self.edits(state) for _, state in batch])
+            self.left -= len(batch)
+            self.evaluations += len(batch)
+            for (canon, state), trial in zip(batch, trials):
+                self.seen[canon] = (self._score(trial), state, trial.values)
+        if over:
+            self.stopped_by = over
+            raise _OutOfBudget
+        return [self.seen[self.canonical(s)] for s in states]
+
+    def _trials(self, edits: list) -> list:
+        if pool.size() and len(edits) >= pool.INLINE_LIMIT:
+            return _run(self.ref, self.raw, self.keys, [(e, None) for e in edits])
+        if self.bench is None:  # in-process: one bench for the whole search
+            self.bench = self.stack.enter_context(bench.Bench(self.ref, self.raw))
+        return [self.bench.trial(e, self.keys) for e in edits]
+
+    def best(self, states):
+        scored = [(s, st) for (s, _, _), st in zip(self.evaluate(states), states)
+                  if s is not None]
+        if not scored:
+            return None, None
+        return min(scored, key=lambda p: ((-p[0][0], -p[0][1]), self.canonical(p[1])))
+
+    def better(self, score, state) -> bool:
+        current = self.evaluate([state])[0][0]
+        return score is not None and (current is None or score > current)
+
+    def singles(self, state) -> list:
+        seen, out = set(), []
+        for where in self.places:
+            pk, occ = self.place_key[where], state[where]
+            if (pk, occ) in seen:
+                continue
+            seen.add((pk, occ))
+            out += [{**state, where: o} for o in [None, *self.options.get(pk, [])] if o != occ]
+        return out
+
+    def pairs(self, state) -> list:
+        seen, reps = set(), []
+        for where in self.places:
+            if (self.place_key[where], state[where]) not in seen:
+                seen.add((self.place_key[where], state[where]))
+                reps.append(where)
+        out = []
+        for i, a in enumerate(reps):
+            for b in reps[i + 1:]:
+                for oa in self.top.get(self.place_key[a], []):
+                    for ob in self.top.get(self.place_key[b], []):
+                        if oa != state[a] and ob != state[b]:
+                            out.append({**state, a: oa, b: ob})
+        return out
+
+    def set_moves(self, state, sets) -> list:
+        out = []
+        for c in sets:
+            new = dict(state)
+            for e in c.edits:
+                pk = f"{e.where[0]} {e.where[1]}"
+                option = next((o for o in self.full.get(pk, []) if o.type_id == e.item_id),
+                              None)
+                if e.where not in new or option is None:
+                    break
+                new[e.where] = option
+            else:
+                out.append(new)
+        return out
+
+    def greedy(self, start, order) -> dict:
+        state = dict(start)
+        for pk in order:
+            for where in [w for w in self.places if self.place_key[w] == pk]:
+                score, best = self.best([{**state, where: o} for o in self.options.get(pk, [])])
+                if self.better(score, state):
+                    state = best
+        return state
+
+    def improve(self, seeds, sets) -> None:
+        """Best single swap (or implant set) until none improves, then the best pair
+        swap; repeat. All seeds step together, so each round is one large batch."""
+        todo = [(state, False) for state in seeds]  # (state, at the pair step)
+        while todo:
+            moves = [self.pairs(st) if paired else self.singles(st) + self.set_moves(st, sets)
+                     for st, paired in todo]
+            self.evaluate([m for ms in moves for m in ms])
+            following = {}
+            for (state, paired), ms in zip(todo, moves):
+                score, best = self.best(ms)
+                if self.better(score, state):
+                    following.setdefault(self.canonical(best), (best, False))
+                elif not paired:
+                    following.setdefault(self.canonical(state), (state, True))
+            todo = list(following.values())
+
+    def screen(self, state) -> dict[Option, dict]:
+        """Each option's effect on every searched key, put in an emptied place."""
+        moves, owners = [], []
+        for pk, opts in self.options.items():
+            where = next((w for w in self.places if self.place_key[w] == pk), None)
+            if where is None:
+                continue
+            empty = {**state, where: None}
+            moves.append(empty)
+            owners.append((None, empty))
+            for option in opts:
+                moves.append({**empty, where: option})
+                owners.append((option, empty))
+        results = self.evaluate(moves)
+        bases = {self.canonical(e): v for (o, e), (_, _, v) in zip(owners, results) if o is None}
+        out = {}
+        for (option, empty), (_, _, values) in zip(owners, results):
+            base = bases.get(self.canonical(empty))
+            if option is not None and values is not None and base is not None:
+                out[option] = {k: values[k] - base[k] for k in self.keys}
+        return out
+
+
+def _useful(delta: dict, key: str, sign: int, cons: list) -> bool:
+    if sign * delta[key] > 0 and not _zero(delta[key], 1.0):
+        return True
+    for stat, op, _ in cons:
+        d = delta[stat]
+        if (op == "eq" and d != 0) or (op == "lte" and d < 0) or (op == "gte" and d > 0):
+            return True
+    return any(delta[k] > 0 for k in _FITTING_KEYS)
+
+
+def _dominated(options: dict[str, list[Option]], deltas: dict, key: str, sign: int,
+               cons: list) -> dict:
+    """Options beaten within their own item group on the objective, every constraint,
+    every fitting output and every fitting cost."""
+    goods = [(key, sign), *((s, 1 if op == "gte" else -1) for s, op, _ in cons if op != "eq"),
+             *((k, 1) for k in _FITTING_KEYS)]
+    equal = [s for s, op, _ in cons if op == "eq"]
+    out = {}
+    for opts in options.values():
+        for a in opts:
+            for b in opts:
+                if a is b or a.group != b.group or a not in deltas or b not in deltas:
+                    continue
+                da, db = deltas[a], deltas[b]
+                no_worse = (all(g * db[k] >= g * da[k] for k, g in goods)
+                            and all(db[s] == da[s] for s in equal)
+                            and b.cpu <= a.cpu and b.pg <= a.pg
+                            and b.calibration <= a.calibration)
+                strictly = (any(g * db[k] > g * da[k] for k, g in goods) or b.cpu < a.cpu
+                            or b.pg < a.pg or b.calibration < a.calibration)
+                if no_worse and (strictly or b.sort_key() < a.sort_key()):
+                    out[a] = f"dominated by {b.name}"
+                    break
+    return out
+
+
+def optimize_fit(fit: str, objective: str, raw_conditions: dict | None = None,
+                 allow: dict | None = None, meta: list[str] | None = None,
+                 locked: str | None = None, constraints: list | None = None,
+                 top_k: int = 5, budget: dict | None = None) -> dict:
+    started = time.monotonic()
+    key, sign = _objective(objective)
+    allow, cons = _allow(allow), _constraints(constraints)
+    raw = _portable(raw_conditions)
+    if raw.get("module_states"):
+        raise ValueError("optimize_fit chooses the modules: set heat with "
+                         "allow.module_states, not conditions.module_states")
+    if top_k < 1:
+        raise ValueError("top_k must be at least 1")
+    if set(budget or {}) - {"evaluations", "seconds"}:
+        raise ValueError('budget: use {"evaluations": n, "seconds": s}')
+    budget = {"evaluations": 20000, "seconds": 60, **(budget or {})}
+    ref, left_out = _fitted(_baseline_eft(fit))
+    sources = {"module", "rig", "charge"} | ({"implant"} if allow["implants"] else set()) \
+        | ({"booster"} if allow["boosters"] else set())
+
+    with bench.Bench(ref, raw) as b:
+        b.measure([key, *(s for s, _, _ in cons)])  # unknown keys fail here
+        found = _pool(b.fit, sources, meta)
+        options = {pk: opts for pk, opts in
+                   _options(found.candidates, "overheated" in allow["module_states"]).items()
+                   if pk in allow["slots"] or pk.split()[0] in ("implant", "booster")}
+        keep, written = _locked_counts(locked)
+        places, place_key, start = [], {}, {}
+        for where in b.module_places() + _pod_places(b, options):
+            occ = b.occupant(where)
+            name = b.name_of(occ[0]).casefold() if occ else None
+            if name and keep[name] > 0:  # locked: stays wherever it is
+                keep[name] -= 1
+                continue
+            searched = (b.rack(where) in allow["slots"] if where[0] == "module"
+                        else allow["implants" if where[0] == "implant" else "boosters"])
+            if not searched:
+                continue
+            places.append(where)
+            place_key[where] = _place_key(b, where)
+            state = occ and occ[2]
+            if where[0] == "module" and occ:  # as an Option's "active" edit would set it
+                mod = b.fit.modules[where[1]]
+                if mod.state == mod.getMaxState(conditions._state("active")):
+                    state = "active"
+            start[where] = None if occ is None else Option(
+                place_key[where], occ[0], occ[1], state, b.name_of(occ[0]), "")
+        missing = [n for n, c in keep.items() if c > 0]
+        if missing:
+            raise ValueError(f"locked: '{written[missing[0]]}' is not on the fit")
+        options = {pk: opts for pk, opts in options.items() if pk in place_key.values()}
+        applied = {**b.applied, "meta": found.meta_note,
+                   "heat": " and ".join(allow["module_states"]), "left_out": left_out}
+
+    sets = [c for c in found.candidates if c.group == "Implant sets"]
+    search = _Search(ref, raw, key, sign, cons, budget, places, place_key, options)
+    pruned: dict = {}
+    considered = options  # until pruning has run
+    converged = True
+    try:
+        clean = {w: None for w in places}
+        search.evaluate([start, clean])  # first, so even a tiny budget returns a fit
+        deltas = search.screen(clean)
+        order = [pk for pk in ("low", "mid", "rig", "high") if pk in options] + \
+            sorted(pk for pk in options if pk not in _RACKS)
+        useful = {o for o, d in deltas.items() if _useful(d, key, sign, cons)}
+        search.options = {pk: [o for o in opts if o in useful] for pk, opts in options.items()}
+        seed = search.greedy(clean, order)
+        search.options = {pk: [o for o in opts if o not in useful]
+                          for pk, opts in options.items()}
+        for option, delta in search.screen(seed).items():
+            if _useful(delta, key, sign, cons):
+                useful.add(option)
+                deltas.setdefault(option, delta)
+        kept = {pk: [o for o in opts if o in useful] for pk, opts in options.items()}
+        dominated = _dominated(kept, deltas, key, sign, cons)
+        for opts in options.values():
+            for o in opts:
+                if o not in useful:
+                    pruned[o.name] = ("no effect on the objective, the constraints or "
+                                      "fitting resources")
+                elif o in dominated:
+                    pruned[o.name] = dominated[o]
+        search.options = considered = {pk: [o for o in opts if o not in dominated]
+                                       for pk, opts in kept.items()}
+        search.top = {pk: sorted(opts, key=lambda o: -sign * deltas[o][key])[:_PAIR_OPTIONS]
+                      for pk, opts in search.options.items()}
+        seeds = [seed, search.greedy(clean, order[::-1])]
+        if any(o is not None for o in start.values()):
+            seeds.insert(0, start)
+        search.improve(seeds, sets)
+    except _OutOfBudget:
+        converged = False
+    finally:
+        search.stack.close()
+
+    ranked = sorted(((s, st) for s, st, _ in search.seen.values() if s is not None),
+                    key=lambda p: ((-p[0][0], -p[0][1]), search.canonical(p[1])))
+    # fits that break fewer constraints always rank first; none that break more is shown
+    ranked = [p for p in ranked if p[0][0] == ranked[0][0][0]]
+    best = []
+    for score, state in ranked[:top_k]:
+        confirmed = _confirm(ref, raw, search.edits(state))
+        flat = confirmed["flat"]
+        shown = list(dict.fromkeys([key, *(s for s, _, _ in cons), *stats.DEFAULT_COMPARE]))
+        holds = all(_holds(flat[s], op, x) for s, op, x in cons)
+        best.append({"eft": confirmed["eft"], "objective_value": flat[key],
+                     "stats": {k: flat[k] for k in shown if k in flat},
+                     "valid": bool(flat["validity.valid"]) and holds,
+                     "warnings": confirmed["result"]["warnings"]})
+    return {
+        "applied": applied,
+        "best": best,
+        "considered": {pk: sorted({o.name for o in opts})
+                       for pk, opts in considered.items()},
+        "pruned": [{"name": n, "reason": r} for n, r in sorted(pruned.items())],
+        "excluded": _excluded_rows(found.excluded),
+        "search": {"method": _METHOD, "evaluations": search.evaluations,
+                   "seconds": round(time.monotonic() - started, 1),
+                   "converged": converged, "stopped_by": search.stopped_by},
+    }

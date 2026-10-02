@@ -8,6 +8,7 @@ process dies.
 """
 from __future__ import annotations
 
+import json
 import multiprocessing
 import os
 import shutil
@@ -53,7 +54,7 @@ def run(ref: str, raw_conditions: dict | None, keys: list[str], trials: list) ->
     executor = _start()
     try:
         step = -(-len(trials) // (_size * 2))
-        futures = [executor.submit(bench.run_trials, ref, raw_conditions, keys,
+        futures = [executor.submit(_work, ref, raw_conditions, keys,
                                    trials[i:i + step])
                    for i in range(0, len(trials), step)]
         return [t for future in futures for t in future.result()]
@@ -62,6 +63,26 @@ def run(ref: str, raw_conditions: dict | None, keys: list[str], trials: list) ->
         raise PoolError("a search worker died; the next call starts fresh ones") from exc
     finally:
         _release()
+
+
+_kept: tuple | None = None  # in a worker: (key, open Bench) reused by the next job
+
+
+def _work(ref: str, raw_conditions: dict | None, keys: list[str], trials: list) -> list:
+    """A worker's job. A search sends many jobs on one fit: the bench stays open
+    between them (an import with conditions costs ~20 plain trials)."""
+    global _kept
+    key = json.dumps([ref, raw_conditions], sort_keys=True)
+    extra = any(e is not None for _, e in trials)
+    if _kept is not None and (_kept[0] != key or extra):
+        _kept[1].__exit__(None, None, None)
+        _kept = None
+    if extra:
+        return bench.run_trials(ref, raw_conditions, keys, trials)
+    if _kept is None:
+        opened = bench.Bench(ref, raw_conditions)
+        _kept = (key, opened.__enter__())
+    return [_kept[1].trial(edits, keys) for edits, _ in trials]
 
 
 def _start() -> ProcessPoolExecutor:

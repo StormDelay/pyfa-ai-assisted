@@ -180,3 +180,75 @@ def test_a_disagreeing_evaluator_wins_and_is_named(booted, no_fits_left, monkeyp
 def test_marginal_swaps_rejects_a_top_n_below_one(booted, no_fits_left):
     with pytest.raises(ValueError, match="top_n must be at least 1"):
         search.marginal_swaps(LOOSE, "tank.ehp.total", top_n=0)
+
+
+WYVERN_ALLOW = {"slots": ["low", "mid", "rig"], "module_states": ["active", "overheated"]}
+
+
+def _lows(text):
+    return text.split("\n\n")[1].splitlines()  # Pyfa's EFT: header, blank line, lows
+
+
+def test_t4_t5_the_best_wyvern(booted, no_fits_left):
+    hot = search.optimize_fit(wyvern.BRIEF, "tank.ehp.total", wyvern.CONDITIONS,
+                              allow=WYVERN_ALLOW, meta=["all"], top_k=1,
+                              budget={"seconds": 900})
+    best = hot["best"][0]
+    assert hot["search"]["converged"] is True
+    assert best["valid"] is True
+    assert best["objective_value"] >= _ehp(wyvern.BEST_LOWS, wyvern.HOT) * (1 - 1e-9)
+    assert best["objective_value"] > _ehp(wyvern.NO_DC, wyvern.HOT)
+    lows = _lows(best["eft"])
+    assert sum("Power Diagnostic System" in n for n in lows) == 3
+    assert sum("Damage Control" in n for n in lows) == 1
+
+    cold = search.optimize_fit(wyvern.BRIEF, "tank.ehp.total", wyvern.CONDITIONS,
+                               allow={**WYVERN_ALLOW, "module_states": ["active"]},
+                               meta=["all"], top_k=1, budget={"seconds": 900})
+    assert cold["search"]["converged"] is True
+    assert cold["best"][0]["objective_value"] < best["objective_value"]
+
+
+def test_optimize_respects_constraints_and_budget(booted, zealot_eft, no_fits_left):
+    speed = evaluate.evaluate(zealot_eft, None)["navigation"]["max_speed"]
+    capped = search.optimize_fit(zealot_eft, "offense.dps.total",
+                                 constraints=[{"stat": "navigation.max_speed", "gte": speed}],
+                                 allow={"slots": ["low", "mid"]}, top_k=2)
+    assert capped["best"]
+    for fit in capped["best"]:
+        assert fit["valid"] is True
+        assert fit["stats"]["navigation.max_speed"] >= speed * (1 - 1e-9)
+    short = search.optimize_fit(zealot_eft, "tank.ehp.total", budget={"evaluations": 50})
+    assert short["search"]["converged"] is False
+    assert short["search"]["stopped_by"] == "evaluations"
+    assert short["best"]
+
+
+def test_optimize_keeps_subsystems(booted, no_fits_left):
+    tengu = ("[Tengu, t]\n\n\n\n\nTengu Core - Augmented Graviton Reactor\n"
+             "Tengu Defensive - Covert Reconfiguration\nTengu Offensive - Accelerated Ejection Bay\n"
+             "Tengu Propulsion - Chassis Optimization\n")
+    result = search.optimize_fit(tengu, "tank.ehp.total", top_k=1, budget={"seconds": 300})
+    for line in tengu.splitlines()[5:]:
+        assert line in result["best"][0]["eft"]
+
+
+def test_optimize_recovers_from_an_invalid_start(booted, no_fits_left):
+    two_dcs = "[Rifter, x]\nDamage Control II\nDamage Control II\n"
+    result = search.optimize_fit(two_dcs, "tank.ehp.total", allow={"slots": ["low"]},
+                                 top_k=1, budget={"seconds": 300})
+    assert result["best"][0]["valid"] is True
+
+
+def test_optimize_refuses_module_states_and_bad_allow(booted, zealot_eft):
+    with pytest.raises(ValueError, match="allow.module_states"):
+        search.optimize_fit(zealot_eft, "tank.ehp.total", {"module_states": [
+            {"module": "Damage Control II", "state": "online"}]})
+    with pytest.raises(ValueError, match="subsystems are kept"):
+        search.optimize_fit(zealot_eft, "tank.ehp.total", allow={"slots": ["subsystem"]})
+    with pytest.raises(ValueError, match="locked: 'Heat Sink III' is not on the fit"):
+        search.optimize_fit(zealot_eft, "tank.ehp.total", locked="Heat Sink III")
+    with pytest.raises(ValueError, match="top_k must be at least 1"):
+        search.optimize_fit(zealot_eft, "tank.ehp.total", top_k=0)
+    with pytest.raises(ValueError, match="budget: use"):
+        search.optimize_fit(zealot_eft, "tank.ehp.total", budget={"second": 5})
