@@ -75,11 +75,28 @@ def test_workers_exit_with_their_parent(booted, tmp_path):
         "time.sleep(600)\n")
     parent = subprocess.Popen([sys.executable, "-c", script, str(tmp_path)], cwd=ROOT,
                               stdout=subprocess.PIPE, text=True)
-    pids = [int(p) for p in parent.stdout.readline().split()]
-    assert pids and all(_alive(p) for p in pids)
-    parent.kill()
-    parent.wait()
-    deadline = time.monotonic() + 30
-    while any(_alive(p) for p in pids) and time.monotonic() < deadline:
-        time.sleep(0.5)
-    assert not any(_alive(p) for p in pids)
+    try:
+        pids = [int(p) for p in parent.stdout.readline().split()]
+        assert pids and all(_alive(p) for p in pids)
+        parent.kill()
+        parent.wait()
+        deadline = time.monotonic() + 30
+        while any(_alive(p) for p in pids) and time.monotonic() < deadline:
+            time.sleep(0.5)
+        assert not any(_alive(p) for p in pids)
+    finally:
+        parent.kill()
+        parent.wait()
+        parent.stdout.close()
+
+
+def test_idle_shutdown_spares_a_running_search(small_pool, zealot_eft):
+    pool.run(zealot_eft, None, KEYS, [([], None)] * 8)
+    with pool._lock:
+        pool._busy += 1
+    try:
+        pool._idle_shutdown()
+        assert pool.describe()["running"] == 2
+    finally:
+        with pool._lock:
+            pool._busy -= 1

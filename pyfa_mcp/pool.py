@@ -91,10 +91,14 @@ def _release() -> None:
 
 
 def _idle_shutdown() -> None:
+    global _executor, _idle
     with _lock:
         if _busy:
             return
-    shutdown()
+        _idle = None
+        executor, _executor = _executor, None
+    if executor is not None:
+        executor.shutdown(wait=False, cancel_futures=True)
 
 
 def shutdown() -> None:
