@@ -23,6 +23,7 @@ from pyfa_mcp.eosboot import TEMP_NOTE
 
 _HEADER = re.compile(r"^\[[^,\]]+,.*\]$")  # fit names may hold "]"
 _COUNT = re.compile(r"^(.*?)\s+x(\d+)$")
+_MUTATION_BLOCK = re.compile(r"^\[\d+\]")
 _SLOT_LABELS = {1: "low", 2: "mid", 3: "high", 4: "rig", 5: "subsystem"}
 
 # What a line without a count may name; anything else is cargo and needs "xN".
@@ -133,15 +134,18 @@ def _lookup(name: str):
 def _item_lines(text: str):
     """(item, charge name, count) for each EFT line naming a known item.
 
-    Header, `[Empty ...]` and mutaplasmid lines start with '[' and are
-    skipped; so are mutation attribute lines, which name no item.
+    `[Empty ...]` lines are skipped. Mutation blocks (`[1] Large Shield
+    Extender II`, then the mutaplasmid and attribute lines) come last in
+    Pyfa's export, so reading stops at the first one.
     """
     for raw in text.splitlines()[1:]:
         line = raw.strip()
+        if _MUTATION_BLOCK.match(line):
+            break
         if not line or line.startswith("["):
             continue
-        line = re.sub(r"\s*/OFFLINE$", "", line)
-        line = re.sub(r"\s*\[\d+\]$", "", line)  # mutated-module marker
+        line = re.sub(r"\s*\[\d+\]$", "", line)  # mutated-item marker, after /OFFLINE
+        line = re.sub(r"\s*/OFFLINE$", "", line, flags=re.IGNORECASE)
         name, _, charge = (part.strip() for part in line.partition(","))
         count = None
         match = _COUNT.match(name)
