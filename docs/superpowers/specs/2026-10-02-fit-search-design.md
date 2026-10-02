@@ -28,7 +28,7 @@ these tools.
   descriptions and server instructions say the same.
 - **The optimizer changes only what the pilot controls**: high/mid/low/rig/
   subsystem slots, charges and scripts, and implants and boosters when
-  allowed. Command bursts, phenomena and projected effects stay as
+  allowed. Command bursts, phenomena, projected and environment effects stay as
   `conditions` sets them; `find_modifiers` still reports them so the agent
   can change `conditions` itself.
 - **Overheat is opt-in** (`allow.module_states`); otherwise active modules
@@ -40,8 +40,47 @@ these tools.
   explanatory `modifies` field and nothing else.
 - **`find_modifiers` output is grouped by item group** by default, with
   `expand` to list variants. Measurement always covers every variant.
+- **Everything outside the hull is listed in one place**
+  (`conditions_format().beyond_the_fit`), and environment effects become a
+  condition. See "Beyond the fit".
 - Out of scope: pricing, mutated (abyssal) modules, optimizing a worst case
-  over several damage profiles, drone/fighter search.
+  over several damage profiles, drone/fighter search, system and pilot
+  security status.
+
+## Beyond the fit
+
+### `conditions_format().beyond_the_fit`
+
+A checklist of every category that changes a fit's numbers without being a
+module on the hull. One entry per category: `how` (EFT or which conditions
+key) and `options` (names when short; item group names when long, whose
+members `search_items` lists). Options are read from the game data at call
+time, not hard-coded.
+
+| category | how | options |
+|---|---|---|
+| pod | EFT (implants, slots 1–10) | slot numbers; implant set names (items sharing a set bonus attribute) |
+| drugs | EFT (boosters, slots 1–3) + `drug_side_effects` | booster groups |
+| links | `command` (a booster fit) | command burst modules and their charges |
+| phenomena | `command` (a titan fit) | the phenomena generators |
+| projected | `projected` | projectable module groups (remote repair, webs, paints, e-war…) |
+| environment | `environment` (new) | beacon names grouped by kind (wormhole class/type, abyssal weather, incursion, faction warfare, sov hub…) |
+| heat | `module_states` | — |
+| mode / spool | `mode` / `spool` | — |
+| skills, damage, target | `character` / `damage_profile` / `target` | profile names (already listed) |
+| drones / fighters | EFT | — |
+
+It replaces the existing one-line `in_eft_instead` note.
+
+### `conditions.environment`
+
+`environment: "<beacon name>"` applies one system effect through Pyfa's
+projected-module path (Pyfa treats system effects as exclusive, so one at a
+time). Accepted: published items in the groups Pyfa marks as system effects
+(`Module`'s system-effect group list: Effect Beacon, MassiveEnvironments,
+Abyssal Hazards, …). Unknown names get close-match suggestions; `applied`
+echoes it (`"environment": "none"` by default). `projected` keeps rejecting
+these items and its error points to `environment`.
 
 ## Architecture
 
@@ -91,6 +130,7 @@ by more than 1e-6 relative, the result carries a warning naming both values.
 | command_burst | burst charge applied via a temporary booster fit | find_modifiers only |
 | phenomena | phenomena generators, as projected | find_modifiers only |
 | projected | projected modules from conditions schema | find_modifiers only |
+| environment | system effect beacons, applied as `conditions.environment` | find_modifiers only |
 
 - `meta` filter: default all except Officer and Deadspace.
 - **Dedupe:** items with identical effects and attribute values are measured
@@ -240,8 +280,9 @@ optimize_fit(fit, objective, conditions=None,
   improved, use marginal_swaps."
 - Server instructions gain a paragraph: for best/max/optimal questions use
   find_modifiers → optimize_fit, audit hand-built fits with marginal_swaps;
-  Officer/Deadspace are excluded unless `meta` includes them; tell the user
-  which.
+  Officer/Deadspace are excluded unless `meta` includes them; walk
+  `conditions_format().beyond_the_fit` and tell the user which of those
+  categories were assumed, set, or left out.
 - `find_modifiers` returns a `next` hint naming optimize_fit; grouped rows
   name `expand`.
 
@@ -282,6 +323,12 @@ approximate (tolerate data drift); choices are exact.
   km; ISA in `pinned.raised_by`.
 - **Defaults:** without `meta`, no Officer/Deadspace candidate appears and
   `applied` says how to include them.
+- **Beyond the fit:** `conditions_format()` lists every category in the
+  table with non-empty options where the table gives some; implant sets
+  include Nirvana; environment options include a Class 6 wormhole effect.
+- **Environment:** a Wyvern under "Class 6 Pulsar Effects" has more shield
+  HP than without; `applied.environment` echoes it; an unknown name gets
+  suggestions; the beacon in `projected` errors and points to `environment`.
 - **Descriptions:** redirect strings present on search_items, evaluate_fit,
   compare_fits.
 - **Speed:** capital optimize_fit with default budget under 60 s;
