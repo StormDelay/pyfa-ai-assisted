@@ -34,6 +34,19 @@ def _row(item) -> dict:
     }
 
 
+def published_items(categories=(), groups=()) -> list:
+    import eos.db
+    from eos.gamedata import Category, Group, Item
+
+    query = (eos.db.gamedata_session.query(Item).join(Group).join(Category)
+             .filter(Item.published == True))  # noqa: E712
+    if categories:
+        query = query.filter(Category.name.in_(categories))
+    if groups:
+        query = query.filter(Group.name.in_(groups))
+    return query.order_by(Item.ID).all()
+
+
 def search_items(query: str, category: str | None = None, meta: str | None = None,
                  limit: int = 25) -> list[dict]:
     import eos.db

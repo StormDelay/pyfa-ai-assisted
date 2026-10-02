@@ -9,6 +9,7 @@ would show for the same clicks. Every value `apply` used comes back in the
 from __future__ import annotations
 
 import difflib
+import functools
 from dataclasses import dataclass, field
 from typing import Callable
 
@@ -39,6 +40,9 @@ _FIELDS = {
                  "[{fit, count?}] projected fits.",
     "mode": "Tactical destroyer mode, e.g. \"sharpshooter\" (EFT cannot carry it). "
             "Default: Pyfa's first mode for the hull.",
+    "environment": "One system effect by name: a wormhole, abyssal weather, incursion, "
+                   "faction warfare or sov hub effect (see beyond_the_fit.environment). "
+                   "Default: none.",
 }
 _EXAMPLES = [
     {"module_states": [{"module": "Medium Armor Repairer II", "state": "overheated"}],
@@ -67,6 +71,7 @@ class Conditions:
     command: tuple = ()
     projected: tuple = ()
     mode: str | None = None
+    environment: str | None = None
     explicit: frozenset = field(default_factory=frozenset)
 
 
@@ -171,8 +176,13 @@ def parse(raw: dict | None) -> Conditions:
     if mode is not None and not isinstance(mode, str):
         raise ConditionsError("mode must be a mode name such as \"sharpshooter\"")
 
+    environment = raw.get("environment")
+    if environment is not None and not isinstance(environment, str):
+        raise ConditionsError("environment must be the name of a system effect, "
+                              "e.g. \"Class 6 Pulsar Effects\"")
+
     return Conditions(
-        mode=mode, damage_profile=damage, target=target, module_states=states,
+        mode=mode, environment=environment, damage_profile=damage, target=target, module_states=states,
         spool=None if spool is None else float(spool),
         drug_side_effects=drugs, command=command, projected=projected,
         explicit=frozenset(raw))
@@ -359,6 +369,10 @@ def _apply_projected(fit, projected, add_fit) -> list[str]:
             echo.append(f"fit '{other.name}' ({other.ship.item.name}) x{count}")
             continue
         item = _item(entry["item"])
+        from eos.saveddata.module import Module
+        if item.group.name in Module.SYSTEM_GROUPS:
+            raise ConditionsError(f"projected: {item.name} is a system effect; "
+                                  "set it with environment")
         if item.isDrone:
             launched = count if state.value >= _state("active").value else 0
             ok = CalcAddProjectedDroneCommand(
@@ -390,6 +404,23 @@ def _apply_command(fit, command, add_fit) -> list[str]:
         CalcAddCommandCommand(fit.ID, other.ID, FittingModuleState.ACTIVE).Do()
         echo.append(f"fit '{other.name}' ({other.ship.item.name})")
     return echo
+
+
+def _apply_environment(fit, name: str | None) -> str | None:
+    if name is None:
+        return None
+    from eos.saveddata.module import Module
+    from gui.fitCommands.calc.module.projectedAdd import CalcAddProjectedModuleCommand
+    from gui.fitCommands.helpers import ModuleInfo
+
+    item = _item(name)
+    if item.group.name not in Module.SYSTEM_GROUPS:
+        raise ConditionsError(f"environment: {item.name} is not a system effect; see "
+                              "conditions_format()['beyond_the_fit']['environment']")
+    info = ModuleInfo(itemID=item.ID, state=_state("online"))
+    if not CalcAddProjectedModuleCommand(fit.ID, info).Do():
+        raise ConditionsError(f"environment: Pyfa refused to apply {item.name}")
+    return item.name
 
 
 def _apply_mode(fit, mode: str | None) -> str | None:
@@ -424,6 +455,7 @@ def apply(fit, cond: Conditions, add_fit: Callable) -> dict:
     drugs = _apply_drugs(fit, cond.drug_side_effects)
     command = _apply_command(fit, cond.command, add_fit)
     projected = _apply_projected(fit, cond.projected, add_fit)
+    environment = _apply_environment(fit, cond.environment)
     FitService.getInstance().recalc(fit)
 
     damage_label = (cond.damage_profile if isinstance(cond.damage_profile, str)
@@ -440,8 +472,55 @@ def apply(fit, cond: Conditions, add_fit: Callable) -> dict:
         "drug_side_effects": drugs or _mark("none", "drug_side_effects", cond),
         "command": command or _mark("none", "command", cond),
         "projected": projected or _mark("none", "projected", cond),
+        "environment": environment or _mark("none", "environment", cond),
         "drones": drones or "none in the EFT",
         **({"mode": _mark(mode, "mode", cond)} if mode else {}),
+    }
+
+
+_BOOSTER_GRADES = ("Synth", "Standard", "Improved", "Strong")
+
+
+@functools.cache
+def beyond_the_fit() -> dict:
+    """Everything that changes a fit's numbers without being a module on the hull."""
+    from eos.saveddata.module import Module
+    from pyfa_mcp.catalog import published_items
+
+    implants = published_items(categories=("Implant",))
+    pods = [i for i in implants if i.group.name != "Booster"]
+    boosters = [i.name for i in implants if i.group.name == "Booster"]
+    sets = sorted({a[len("ImplantSet"):] for i in pods for a in i.attributes
+                   if a.startswith("ImplantSet")})
+    drugs = sorted({" ".join(n.split()[1:]) if n.split()[0] in _BOOSTER_GRADES else n
+                    for n in boosters})
+    bursts = {i.name: sorted(c.name for c in Module(i).getValidCharges() if c.published)
+              for i in published_items(groups=("Command Burst",))}
+    environment: dict[str, list[str]] = {}
+    for item in published_items(groups=Module.SYSTEM_GROUPS):
+        environment.setdefault(item.group.name, []).append(item.name)
+    return {
+        "pod": {"how": "EFT: implant lines after the modules, one per slot 1-10",
+                "options": {"sets": sets, "slots": "1-10; search_items(category=\"Implant\")"}},
+        "drugs": {"how": "EFT: booster lines; side effects via drug_side_effects",
+                  "options": drugs},
+        "links": {"how": "command: a booster fit carrying command bursts and their charges",
+                  "options": bursts},
+        "phenomena": {"how": "command: a titan fit carrying its racial phenomena generator",
+                      "options": sorted(i.name for i in published_items(
+                          groups=("Titan Phenomena Generator",)))},
+        "projected": {"how": "projected: [{item, count?, state?}] or [{fit, count?}]",
+                      "options": sorted({i.group.name for i in published_items(
+                          categories=("Module",)) if i.isType("projected")})},
+        "environment": {"how": "environment: one system effect by name",
+                        "options": {g: sorted(n) for g, n in sorted(environment.items())}},
+        "heat": {"how": "module_states: [{module, state: \"overheated\"}]", "options": []},
+        "mode_spool": {"how": "mode (tactical destroyers), spool (Triglavian weapons)",
+                       "options": []},
+        "skills_damage_target": {"how": "character, damage_profile, target",
+                                 "options": "see damage_profiles and target_profiles"},
+        "drones_fighters": {"how": "EFT: 'Name xN' lines, launched up to bandwidth and skills",
+                            "options": []},
     }
 
 
@@ -460,6 +539,5 @@ def describe() -> dict:
         "target_profiles": list(_builtin_target_profiles()),
         **mine,
         "examples": _EXAMPLES,
-        "in_eft_instead": "implants, drugs (boosters), charges, drones/fighters with "
-                          "counts, /OFFLINE modules and mutated modules go in the EFT text",
+        "beyond_the_fit": beyond_the_fit(),
     }
