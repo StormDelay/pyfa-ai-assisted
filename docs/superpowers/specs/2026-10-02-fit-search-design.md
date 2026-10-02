@@ -49,8 +49,8 @@ these tools.
   (`conditions_format().beyond_the_fit`), and environment effects become a
   condition. See "Beyond the fit".
 - **Related fix:** an EFT line naming an item that cannot be fitted (e.g.
-  the component "Capital Armor Plates") is an error today it is silently
-  dropped by Pyfa's importer and not reported.
+  the component "Capital Armor Plates") is an error; today Pyfa's importer
+  drops it silently and nothing reports it.
 - Out of scope: pricing, mutated (abyssal) modules, optimizing a worst case
   over several damage profiles, drone/fighter search, system and pilot
   security status.
