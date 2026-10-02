@@ -101,3 +101,25 @@ def test_looks_like_eft():
     assert eft.looks_like_eft("\n  [Zealot, x]\n")
     assert not eft.looks_like_eft("My Zealot")
     assert not eft.looks_like_eft("12")
+
+
+def test_drone_without_count_is_an_error(booted, no_fits_left):
+    with pytest.raises(eft.EftError, match="'Hobgoblin II x5'"):
+        eft.import_fit("[Zealot, x]\n\n\n\nHobgoblin II\n")
+
+
+def test_non_charge_in_charge_position_is_an_error(booted, no_fits_left):
+    with pytest.raises(eft.EftError, match="'Hobgoblin II' is not a charge"):
+        eft.import_fit("[Zealot, x]\n\n\nHeavy Pulse Laser II, Hobgoblin II\n")
+
+
+def test_second_implant_in_a_slot_is_recorded(booted, no_fits_left):
+    fit = eft.import_fit("[Zealot, x]\n\n\n\n"
+                         "Inherent Implants 'Squire' Capacitor Management EM-805\n"
+                         "Inherent Implants 'Squire' Capacitor Management EM-803\n")
+    try:
+        assert len(fit.implants) == 1
+        assert len(fit.dropped_modules) == 1
+        assert "slot" in fit.dropped_modules[0].reason
+    finally:
+        _delete(fit)

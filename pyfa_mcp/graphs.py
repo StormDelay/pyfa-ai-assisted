@@ -10,8 +10,8 @@ from __future__ import annotations
 
 from collections import namedtuple
 
-from pyfa_mcp import conditions
-from pyfa_mcp.evaluate import Scratch
+from pyfa_mcp import conditions, stats
+from pyfa_mcp.evaluate import Scratch, warnings_for
 
 # The GUI's InputData (graphs/gui/ctrlPanel.py), which we cannot import:
 # that module is the wx control panel itself.
@@ -155,6 +155,7 @@ def fit_graph(ref: str, graph: str, x: str, y: str, x_range: list[float],
     with Scratch() as scratch:
         fit = scratch.add_fit(ref)
         applied = conditions.apply(fit, cond, scratch.add_fit)
+        warnings = warnings_for(stats.fit_stats(fit, conditions.spool_of(cond)))
         target = None
         if view.hasTargets:
             from eos.saveddata.targetProfile import TargetProfile
@@ -168,4 +169,5 @@ def fit_graph(ref: str, graph: str, x: str, y: str, x_range: list[float],
         "y": {"handle": y_def.handle, "unit": y_def.unit},
         "points": _downsample(list(xs), list(ys), max_points),
         "applied": applied,
+        "warnings": warnings,
     }

@@ -245,6 +245,7 @@ def target_profile(cond: Conditions):
 
 def _apply_module_states(fit, states) -> list[str]:
     echo = []
+    claimed: set[int] = set()  # each module takes the state of one entry only
     for entry in states:
         name, state = entry["module"], _state(entry["state"])
         mods = [m for m in fit.modules
@@ -253,16 +254,44 @@ def _apply_module_states(fit, states) -> list[str]:
             fitted = sorted({m.item.name for m in fit.modules if not m.isEmpty})
             raise ConditionsError(
                 f"module_states: '{name}' is not fitted; fitted: {', '.join(fitted)}")
-        count = entry.get("count", len(mods))
+        free = [m for m in mods if id(m) not in claimed]
+        count = entry.get("count", len(free))
         if count > len(mods):
             raise ConditionsError(
                 f"module_states: count {count} for '{name}' but only {len(mods)} fitted")
-        for mod in mods[:count]:
+        if not free or count > len(free):
+            raise ConditionsError(
+                f"module_states: {len(mods) - len(free)} of the {len(mods)} '{name}' "
+                "are already set by an earlier entry")
+        for mod in free[:count]:
+            claimed.add(id(mod))
             if not mod.isValidState(state):
                 raise ConditionsError(
                     f"module_states: {mod.item.name} cannot be {entry['state']}")
             mod.state = state
         echo.append(f"{mods[0].item.name} x{count}: {entry['state']}")
+    return echo
+
+
+def _launch_drones(fit) -> list[str]:
+    """Launch the EFT's drones, as many as bandwidth and skills allow.
+
+    Pyfa imports drones docked (the GUI user clicks them out); a fit is
+    asked about with its drones out, so launch them in EFT order.
+    """
+    bandwidth = fit.ship.getModifiedItemAttr("droneBandwidth") or 0
+    limit = fit.extraAttributes["maxActiveDrones"]
+    used, active, echo = 0.0, 0, []
+    for drone in fit.drones:
+        each = drone.getModifiedItemAttr("droneBandwidthUsed") or 0
+        count = drone.amount
+        if each:
+            count = min(count, int((bandwidth - used + 1e-6) // each))
+        count = max(0, min(count, limit - active))
+        drone.amountActive = count
+        used += count * each
+        active += count
+        echo.append(f"{drone.item.name}: {count} of {drone.amount} launched (default)")
     return echo
 
 
@@ -304,8 +333,12 @@ def _apply_projected(fit, projected, add_fit) -> list[str]:
             continue
         item = _item(entry["item"])
         if item.isDrone:
-            CalcAddProjectedDroneCommand(
-                fit.ID, DroneInfo(amount=count, amountActive=count, itemID=item.ID)).Do()
+            launched = count if state.value >= _state("active").value else 0
+            ok = CalcAddProjectedDroneCommand(
+                fit.ID, DroneInfo(amount=count, amountActive=launched, itemID=item.ID)).Do()
+            if not ok:
+                raise ConditionsError(f"projected: {item.name} cannot be projected "
+                                      "(Pyfa only projects e-war and logistics drones)")
         elif item.category.name == "Module":
             for _ in range(count):
                 ok = CalcAddProjectedModuleCommand(
@@ -359,6 +392,7 @@ def apply(fit, cond: Conditions, add_fit: Callable) -> dict:
     fit.targetProfile = target_profile(cond)
 
     mode = _apply_mode(fit, cond.mode)
+    drones = _launch_drones(fit)
     states = _apply_module_states(fit, cond.module_states)
     drugs = _apply_drugs(fit, cond.drug_side_effects)
     command = _apply_command(fit, cond.command, add_fit)
@@ -379,6 +413,7 @@ def apply(fit, cond: Conditions, add_fit: Callable) -> dict:
         "drug_side_effects": drugs or _mark("none", "drug_side_effects", cond),
         "command": command or _mark("none", "command", cond),
         "projected": projected or _mark("none", "projected", cond),
+        "drones": drones or "none in the EFT",
         **({"mode": _mark(mode, "mode", cond)} if mode else {}),
     }
 

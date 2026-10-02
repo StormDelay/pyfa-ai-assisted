@@ -16,6 +16,8 @@ def temp_fits(booted):
         return fit
 
     yield add_fit
+    import eos.db
+    eos.db.commit()  # as Scratch does: flush items added by conditions first
     for fit_id in reversed(made):  # projected/command fits first
         Fit.deleteFit(fit_id)
     from pyfa_mcp import eosboot
@@ -208,3 +210,53 @@ def test_describe_lists_profiles(booted):
     assert "uniform" in d["damage_profiles"]
     assert d["fields"]["spool"]
     assert d["examples"]
+
+
+def test_eft_drones_are_launched_by_default(temp_fits):
+    fit = temp_fits("[Vexor, drones]\n\n\n\nHammerhead II x5\n")
+    applied = C.apply(fit, C.parse(None), temp_fits)
+    assert fit.drones[0].amountActive == 5
+    assert fit.getDroneDps().total > 0
+    assert applied["drones"] == ["Hammerhead II: 5 of 5 launched (default)"]
+
+
+def test_drone_launch_respects_pyfa_limits(temp_fits):
+    fit = temp_fits("[Vexor, drones]\n\n\n\nHammerhead II x5\nHobgoblin II x5\n")
+    applied = C.apply(fit, C.parse(None), temp_fits)
+    import eos.db  # noqa: F401
+    active = sum(d.amountActive for d in fit.drones)
+    assert active == fit.extraAttributes["maxActiveDrones"]
+    assert fit.droneBandwidthUsed <= fit.ship.getModifiedItemAttr("droneBandwidth")
+    assert any("of 5 launched" in line for line in applied["drones"])
+
+
+def test_overlapping_module_states_use_different_modules(temp_fits, zealot_eft):
+    from eos.const import FittingModuleState
+    fit = temp_fits(zealot_eft)
+    C.apply(fit, C.parse({"module_states": [
+        {"module": "Heat Sink II", "state": "offline", "count": 1},
+        {"module": "Heat Sink II", "state": "online", "count": 1}]}), temp_fits)
+    states = sorted(m.state for m in fit.modules if not m.isEmpty and m.item.name == "Heat Sink II")
+    assert states == [FittingModuleState.OFFLINE, FittingModuleState.ONLINE]
+
+
+def test_module_states_run_out(temp_fits, zealot_eft):
+    fit = temp_fits(zealot_eft)
+    with pytest.raises(C.ConditionsError, match="already"):
+        C.apply(fit, C.parse({"module_states": [
+            {"module": "Heat Sink II", "state": "offline"},
+            {"module": "Heat Sink II", "state": "online", "count": 1}]}), temp_fits)
+
+
+def test_projected_drone_state_is_honoured(temp_fits, zealot_eft):
+    fit = temp_fits(zealot_eft)
+    applied = C.apply(fit, C.parse({"projected": [
+        {"item": "Berserker TP-900", "count": 2, "state": "offline"}]}), temp_fits)
+    assert fit.projectedDrones[0].amountActive == 0
+    assert "(offline)" in applied["projected"][0]
+
+
+def test_unprojectable_drone_is_an_error(temp_fits, zealot_eft):
+    fit = temp_fits(zealot_eft)
+    with pytest.raises(C.ConditionsError, match="cannot be projected"):
+        C.apply(fit, C.parse({"projected": [{"item": "Hobgoblin II"}]}), temp_fits)

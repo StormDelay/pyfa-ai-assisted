@@ -16,11 +16,13 @@ import contextlib
 import difflib
 import functools
 import re
+from collections import Counter
 from typing import NamedTuple
 
 from pyfa_mcp.eosboot import TEMP_NOTE
 
 _HEADER = re.compile(r"^\[[^,\]]+,[^\]]*\]$")
+_COUNT = re.compile(r"^(.*?)\s+x(\d+)$")
 _SLOT_LABELS = {1: "low", 2: "mid", 3: "high", 4: "rig", 5: "subsystem"}
 
 
@@ -117,6 +119,64 @@ def _recording_drops():
         Module.fits, Module.isValidCharge = real_fits, real_valid_charge
 
 
+def _lookup(name: str):
+    from service.market import Market
+    try:
+        return Market.getInstance().getItem(name)
+    except Exception:
+        return None
+
+
+def _item_lines(text: str):
+    """(item, charge name, count) for each EFT line naming a known item.
+
+    Header, `[Empty ...]` and mutaplasmid lines start with '[' and are
+    skipped; so are mutation attribute lines, which name no item.
+    """
+    for raw in text.splitlines()[1:]:
+        line = raw.strip()
+        if not line or line.startswith("["):
+            continue
+        line = re.sub(r"\s*/OFFLINE$", "", line)
+        line = re.sub(r"\s*\[\d+\]$", "", line)  # mutated-module marker
+        name, _, charge = (part.strip() for part in line.partition(","))
+        count = None
+        match = _COUNT.match(name)
+        if match:
+            name, count = match.group(1), int(match.group(2))
+        item = _lookup(name)
+        if item is not None:
+            yield item, charge, count
+
+
+def _line_errors(text: str) -> list[str]:
+    """Lines Pyfa would resolve and then throw away without a word."""
+    errors = []
+    for item, charge, count in _item_lines(text):
+        if count is None and item.category.name in ("Drone", "Fighter"):
+            errors.append(f"'{item.name}' needs a count, e.g. '{item.name} x5'")
+        if charge:
+            loaded = _lookup(charge)
+            if loaded is not None and loaded.category.name != "Charge":
+                errors.append(f"'{loaded.name}' is not a charge and cannot be loaded "
+                              f"into {item.name}")
+    return errors
+
+
+def _implants_left_out(text: str, fit) -> list[DroppedModule]:
+    """Implants/boosters Pyfa dropped because their slot was already taken."""
+    placed = Counter(i.item.name for i in (*fit.implants, *fit.boosters))
+    left_out = []
+    for item, _, _ in _item_lines(text):
+        if item.category.name != "Implant":
+            continue
+        if placed[item.name]:
+            placed[item.name] -= 1
+        else:
+            left_out.append(DroppedModule(item.name, "its implant/booster slot is already taken"))
+    return left_out
+
+
 def import_fit(text: str, *, name: str | None = None, temp: bool = False):
     import eos.db
     from service.fit import Fit as FitService
@@ -128,6 +188,9 @@ def import_fit(text: str, *, name: str | None = None, temp: bool = False):
         raise EftError(
             "EFT text must start with a '[Ship, Fit name]' header line, "
             f"got {first[:60]!r}")
+    errors = _line_errors(text)
+    if errors:
+        raise EftError("; ".join(errors))
 
     failure = None
     with _recording_misses() as misses, _recording_drops() as dropped:
@@ -150,7 +213,8 @@ def import_fit(text: str, *, name: str | None = None, temp: bool = False):
         fit.notes = TEMP_NOTE
     eos.db.commit()
     fit = FitService.getInstance().getFit(fit.ID)
-    fit.dropped_modules = list(dropped.values())  # not persisted; lives with the object
+    # Not persisted; lives with the object for this process.
+    fit.dropped_modules = [*dropped.values(), *_implants_left_out(text, fit)]
     return fit
 
 

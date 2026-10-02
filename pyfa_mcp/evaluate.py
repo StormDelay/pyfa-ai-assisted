@@ -19,7 +19,11 @@ class Scratch:
         return self
 
     def __exit__(self, *exc):
+        import eos.db
         from service.fit import Fit
+        # Flush first: an item added by a condition (a projected drone) is
+        # still pending, and deleting its fit would insert it fit-less.
+        eos.db.commit()
         # Projected and command fits first: they hang off the main fit.
         for fit_id in reversed(self._ids):
             Fit.deleteFit(fit_id)
@@ -28,7 +32,7 @@ class Scratch:
         return False
 
 
-def _warnings(result: dict) -> list[str]:
+def warnings_for(result: dict) -> list[str]:
     problems = result["validity"]["problems"]
     return ["fit is not valid: " + "; ".join(problems)] if problems else []
 
@@ -40,7 +44,7 @@ def _evaluate_parsed(ref: str, cond) -> dict:
         result = stats.fit_stats(fit, conditions.spool_of(cond))
         name, ship = fit.name, fit.ship.item.name
     return {"fit": name, "ship": ship, "applied": applied,
-            "warnings": _warnings(result), **result}
+            "warnings": warnings_for(result), **result}
 
 
 def evaluate(ref: str, raw_conditions: dict | None) -> dict:
@@ -64,6 +68,9 @@ def compare(refs: list[str], raw_conditions: dict | None,
             result = _evaluate_parsed(ref, cond)
         except (eft.EftError, store.StoreError, conditions.ConditionsError) as exc:
             rows.append({"fit": _label(ref), "error": str(exc)})
+            continue
+        except Exception as exc:  # one fit Pyfa chokes on must not sink the table
+            rows.append({"fit": _label(ref), "error": f"{type(exc).__name__}: {exc}"})
             continue
         applied = applied or result["applied"]
         flat = stats.flatten({k: v for k, v in result.items()

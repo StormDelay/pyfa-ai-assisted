@@ -67,3 +67,24 @@ def test_compare_unknown_key(booted, zealot_eft, no_fits_left):
 def test_compare_bad_conditions_fail_whole_call(booted, zealot_eft, no_fits_left):
     with pytest.raises(conditions.ConditionsError):
         evaluate.compare([zealot_eft], {"bogus": 1}, None)
+
+
+def test_compare_isolates_any_failure(booted, zealot_eft, no_fits_left, monkeypatch):
+    real = evaluate._evaluate_parsed
+
+    def flaky(ref, cond):
+        if "boom" in ref:
+            raise RuntimeError("Pyfa fell over")
+        return real(ref, cond)
+
+    monkeypatch.setattr(evaluate, "_evaluate_parsed", flaky)
+    table = evaluate.compare([zealot_eft, "[Rifter, boom]\n"], None, None)
+    assert table["rows"][1]["error"] == "RuntimeError: Pyfa fell over"
+    assert "tank.ehp.total" in table["rows"][0]
+
+
+def test_projected_drones_leave_nothing(booted, zealot_eft, no_fits_left):
+    import eos.db
+    evaluate.evaluate(zealot_eft, {"projected": [{"item": "Berserker TP-900", "count": 2}]})
+    with eos.db.saveddata_engine.connect() as connection:
+        assert connection.exec_driver_sql("SELECT count(*) FROM drones").scalar() == 0

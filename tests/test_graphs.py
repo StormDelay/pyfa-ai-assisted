@@ -65,3 +65,9 @@ def test_unknown_axis(booted, zealot_eft, no_fits_left):
 def test_bad_range(booted, zealot_eft):
     with pytest.raises(graphs.GraphError, match="x_range"):
         graphs.fit_graph(zealot_eft, "lock_time", "tgtSigRad", "time", [500], None, None)
+
+
+def test_graph_carries_fit_warnings(booted, no_fits_left):
+    out = graphs.fit_graph("[Zealot, over]\n\n\n" + "Heavy Pulse Laser II\n" * 7,
+                           "lock_time", "tgtSigRad", "time", [25, 500], None, None)
+    assert out["warnings"] and "left out" in out["warnings"][0]

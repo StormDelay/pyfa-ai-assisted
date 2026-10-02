@@ -72,6 +72,14 @@ def _validity(fit) -> dict:
     for mod in fit.modules:
         if not mod.isEmpty and not mod.fits(fit):
             problems.append(f"{mod.item.name} cannot be fitted to this ship")
+    bay = ship.getModifiedItemAttr("droneCapacity") or 0
+    resource("drone bay", fit.droneBayUsed, bay)
+    bandwidth = ship.getModifiedItemAttr("droneBandwidth") or 0
+    resource("drone bandwidth", fit.droneBandwidthUsed, bandwidth)
+    launched = sum(d.amountActive for d in fit.drones)
+    if launched > fit.extraAttributes["maxActiveDrones"]:
+        problems.append(f"{launched} drones launched, skills allow "
+                        f"{fit.extraAttributes['maxActiveDrones']}")
     for dropped in getattr(fit, "dropped_modules", ()):
         problems.append(f"{dropped.name} was left out: {dropped.reason}")
 

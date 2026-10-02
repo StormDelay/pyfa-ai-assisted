@@ -60,3 +60,9 @@ def test_temp_fits_are_invisible(booted, zealot_eft, no_fits_left):
             store.get_fit("Hidden temp")
     finally:
         Fit.deleteFit(fit.ID)
+
+
+def test_save_refuses_a_trimmed_fit(booted, no_fits_left):
+    eft_text = "[Zealot, over]\n\n\n" + "Heavy Pulse Laser II\n" * 7
+    with pytest.raises(store.StoreError, match="left out"):
+        store.save_fit(eft_text, "Trimmed")

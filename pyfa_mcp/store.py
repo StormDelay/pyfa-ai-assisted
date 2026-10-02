@@ -59,7 +59,13 @@ def save_fit(ref: str, name: str) -> dict:
         raise StoreError("a stored fit needs a name")
     if any(f.name.casefold() == name.casefold() for f in _stored()):
         raise StoreError(f"a stored fit is already named '{name}'; delete it or pick another name")
-    return _entry(eft.import_fit(resolve_eft(ref), name=name))
+    fit = eft.import_fit(resolve_eft(ref), name=name)
+    if fit.dropped_modules:
+        from service.fit import Fit
+        Fit.deleteFit(fit.ID)
+        left_out = "; ".join(f"{d.name} ({d.reason})" for d in fit.dropped_modules)
+        raise StoreError(f"not saved: Pyfa left out {left_out}; fix the fit first")
+    return _entry(fit)
 
 
 def list_fits(ship: str | None = None) -> list[dict]:

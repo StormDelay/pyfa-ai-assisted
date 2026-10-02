@@ -57,3 +57,13 @@ def test_flatten(zealot):
     assert "tank.ehp.total" in flat
     for key in stats.DEFAULT_COMPARE:
         assert key in flat, key
+
+
+def test_drone_bay_overflow_is_a_problem(booted, no_fits_left):
+    from service.fit import Fit
+    fit = eft.import_fit("[Rifter, ogres]\n\n\n\nOgre II x5\n")
+    try:
+        s = stats.fit_stats(fit, spool=1.0)
+        assert any("drone bay" in p for p in s["validity"]["problems"])
+    finally:
+        Fit.deleteFit(fit.ID)
