@@ -79,6 +79,16 @@ def test_modules_pyfa_drops_are_recorded(booted, no_fits_left):
         _delete(fit)
 
 
+def test_charges_pyfa_refuses_are_recorded(booted, no_fits_left):
+    # Large crystals in a medium laser: Pyfa leaves the gun empty, silently.
+    fit = eft.import_fit("[Zealot, x]\n\n\nHeavy Pulse Laser II, Scorch L\n")
+    try:
+        assert fit.dropped_modules == [eft.DroppedModule(
+            "Scorch L", "charge does not fit Heavy Pulse Laser II")]
+    finally:
+        _delete(fit)
+
+
 def test_nothing_dropped_from_a_valid_fit(booted, zealot_eft, no_fits_left):
     fit = eft.import_fit(zealot_eft)
     try:

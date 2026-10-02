@@ -176,6 +176,33 @@ def test_command_burst_fit(temp_fits, zealot_eft):
     assert "boosts" in applied["command"][0]
 
 
+HECATE = "[Hecate, modes]\n\n1MN Afterburner II\n"
+
+
+def test_mode_defaults_to_pyfas_first_mode(temp_fits):
+    fit = temp_fits(HECATE)
+    applied = C.apply(fit, C.parse(None), temp_fits)
+    assert applied["mode"] == f"{fit.mode.item.name} (default)"
+
+
+def test_mode_changes_the_hull(temp_fits):
+    defense = temp_fits(HECATE)
+    C.apply(defense, C.parse({"mode": "defense"}), temp_fits)
+    sniper = temp_fits(HECATE)
+    applied = C.apply(sniper, C.parse({"mode": "Sharpshooter"}), temp_fits)
+    assert applied["mode"] == "Hecate Sharpshooter Mode"
+    assert sniper.maxTargetRange > defense.maxTargetRange
+
+
+def test_mode_errors(temp_fits, zealot_eft):
+    hecate = temp_fits(HECATE)
+    with pytest.raises(C.ConditionsError, match="Sharpshooter"):
+        C.apply(hecate, C.parse({"mode": "flying"}), temp_fits)
+    zealot = temp_fits(zealot_eft)
+    with pytest.raises(C.ConditionsError, match="no modes"):
+        C.apply(zealot, C.parse({"mode": "defense"}), temp_fits)
+
+
 def test_describe_lists_profiles(booted):
     d = C.describe()
     assert "uniform" in d["damage_profiles"]

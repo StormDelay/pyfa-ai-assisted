@@ -6,7 +6,8 @@ Pyfa's EFT importer silently skips two kinds of line:
   `service.port.eft.fetchItem`, so we wrap it and record each miss; a fit
   with misses is deleted and reported instead of returned.
 - a module that does not fit the hull (no free slot or hardpoint, a hull
-  restriction). Placement asks `Module.fits`, so we wrap it and record each
+  restriction), or a charge the module cannot load. Placement asks
+  `Module.fits` and `Module.isValidCharge`, so we wrap both and record each
   refusal; the fit is kept, and `fit.dropped_modules` says what was left out.
 """
 from __future__ import annotations
@@ -93,20 +94,27 @@ def _drop_reason(module, fit) -> str:
 def _recording_drops():
     from eos.saveddata.module import Module
 
-    real = Module.fits
-    dropped: dict[int, DroppedModule] = {}
+    real_fits, real_valid_charge = Module.fits, Module.isValidCharge
+    dropped: dict[object, DroppedModule] = {}
 
     def fits(self, fit, *args, **kwargs):
-        ok = real(self, fit, *args, **kwargs)
+        ok = real_fits(self, fit, *args, **kwargs)
         if not ok and not self.isEmpty and id(self) not in dropped:
             dropped[id(self)] = DroppedModule(self.item.name, _drop_reason(self, fit))
         return ok
 
-    Module.fits = fits
+    def is_valid_charge(self, charge):
+        ok = real_valid_charge(self, charge)
+        key = (id(self), "charge")
+        if not ok and charge is not None and not self.isEmpty and key not in dropped:
+            dropped[key] = DroppedModule(charge.name, f"charge does not fit {self.item.name}")
+        return ok
+
+    Module.fits, Module.isValidCharge = fits, is_valid_charge
     try:
         yield dropped
     finally:
-        Module.fits = real
+        Module.fits, Module.isValidCharge = real_fits, real_valid_charge
 
 
 def import_fit(text: str, *, name: str | None = None, temp: bool = False):

@@ -34,6 +34,8 @@ _FIELDS = {
                "stored fit name/id).",
     "projected": "[{item, count?, state?}] projected modules or drones, or "
                  "[{fit, count?}] projected fits.",
+    "mode": "Tactical destroyer mode, e.g. \"sharpshooter\" (EFT cannot carry it). "
+            "Default: Pyfa's first mode for the hull.",
 }
 _EXAMPLES = [
     {"module_states": [{"module": "Medium Armor Repairer II", "state": "overheated"}],
@@ -61,6 +63,7 @@ class Conditions:
     drug_side_effects: tuple = ()
     command: tuple = ()
     projected: tuple = ()
+    mode: str | None = None
     explicit: frozenset = field(default_factory=frozenset)
 
 
@@ -161,8 +164,12 @@ def parse(raw: dict | None) -> Conditions:
         if entry.get("state", "active") not in _STATES:
             raise ConditionsError(f"projected: state must be one of {', '.join(_STATES)}")
 
+    mode = raw.get("mode")
+    if mode is not None and not isinstance(mode, str):
+        raise ConditionsError("mode must be a mode name such as \"sharpshooter\"")
+
     return Conditions(
-        damage_profile=damage, target=target, module_states=states,
+        mode=mode, damage_profile=damage, target=target, module_states=states,
         spool=None if spool is None else float(spool),
         drug_side_effects=drugs, command=command, projected=projected,
         explicit=frozenset(raw))
@@ -325,6 +332,22 @@ def _apply_command(fit, command, add_fit) -> list[str]:
     return echo
 
 
+def _apply_mode(fit, mode: str | None) -> str | None:
+    from gui.fitCommands.calc.shipModeChange import CalcChangeShipModeCommand
+
+    modes = fit.ship.modes
+    if mode is None:
+        return fit.mode.item.name if fit.mode is not None else None
+    if not modes:
+        raise ConditionsError(f"mode: {fit.ship.item.name} has no modes")
+    names = [m.item.name for m in modes]
+    matches = [m for m in modes if mode.casefold() in m.item.name.casefold()]
+    if len(matches) != 1:
+        raise ConditionsError(f"mode: '{mode}' must match one of {', '.join(names)}")
+    CalcChangeShipModeCommand(fit.ID, matches[0].item.ID).Do()
+    return matches[0].item.name
+
+
 def _mark(value: str, key: str, cond: Conditions) -> str:
     return value if key in cond.explicit else f"{value} (default)"
 
@@ -335,6 +358,7 @@ def apply(fit, cond: Conditions, add_fit: Callable) -> dict:
     fit.damagePattern = damage_pattern(cond)
     fit.targetProfile = target_profile(cond)
 
+    mode = _apply_mode(fit, cond.mode)
     states = _apply_module_states(fit, cond.module_states)
     drugs = _apply_drugs(fit, cond.drug_side_effects)
     command = _apply_command(fit, cond.command, add_fit)
@@ -355,6 +379,7 @@ def apply(fit, cond: Conditions, add_fit: Callable) -> dict:
         "drug_side_effects": drugs or _mark("none", "drug_side_effects", cond),
         "command": command or _mark("none", "command", cond),
         "projected": projected or _mark("none", "projected", cond),
+        **({"mode": _mark(mode, "mode", cond)} if mode else {}),
     }
 
 

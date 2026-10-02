@@ -162,7 +162,8 @@ per-result warnings to the user.
 ### `conditions`
 
 EFT already carries implants, drugs, charges, drones/fighters with counts,
-`/OFFLINE` modules and mutated modules. `conditions` covers the rest:
+`/OFFLINE` modules and mutated modules. `conditions` covers the rest
+(including tactical destroyer modes, which EFT does not carry):
 
 ```json
 {
@@ -174,7 +175,8 @@ EFT already carries implants, drugs, charges, drones/fighters with counts,
   "drug_side_effects": [{"drug":"<booster name>", "effect":"<side effect>"}],
   "command": [{"fit":"<EFT or stored name>"}],
   "projected": [{"item":"Stasis Webifier II", "count":2, "state":"active"},
-                {"fit":"<EFT or stored name>", "count":1}]
+                {"fit":"<EFT or stored name>", "count":1}],
+  "mode": "sharpshooter"
 }
 ```
 
