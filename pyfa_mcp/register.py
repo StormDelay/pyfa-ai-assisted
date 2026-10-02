@@ -51,21 +51,21 @@ class Client:
         return {"type": "stdio", **entry} if self.typed else entry
 
 
-def _claude_desktop_dir(appdata: Path, local: Path) -> Path:
-    """The classic install's dir, else the Microsoft Store (MSIX) build's.
+def _claude_desktop_dir(appdata: Path, local: Path) -> tuple[Path, Path]:
+    """(config dir, install marker): the classic install's, else the Microsoft Store build's.
 
     Windows redirects a packaged app's %APPDATA% to
     %LOCALAPPDATA%\\Packages\\<family>\\LocalCache\\Roaming; the family name
-    ends in a publisher hash, so it is matched by prefix.
+    ends in a publisher hash, so it is matched by prefix. The package dir is
+    the marker: a Store install never started has no redirected dir yet, and
+    the installer (pyfa-mcp.iss, ClaudeDesktopFound) checks the same thing.
     """
     classic = appdata / "Claude"
     if classic.is_dir():
-        return classic
+        return classic, classic
     for package in sorted(local.glob("Packages/Claude_*")):
-        redirected = package / "LocalCache" / "Roaming" / "Claude"
-        if redirected.is_dir():
-            return redirected
-    return classic
+        return package / "LocalCache" / "Roaming" / "Claude", package
+    return classic, classic
 
 
 def clients() -> dict[str, Client]:
@@ -73,11 +73,11 @@ def clients() -> dict[str, Client]:
     home = Path.home()
     appdata = Path(os.environ.get("APPDATA") or home / "AppData" / "Roaming")
     local = Path(os.environ.get("LOCALAPPDATA") or home / "AppData" / "Local")
-    desktop = _claude_desktop_dir(appdata, local)
+    desktop, desktop_marker = _claude_desktop_dir(appdata, local)
     windsurf = home / ".codeium" / "windsurf"
     return {
         "claude-desktop": Client("Claude Desktop", desktop / "claude_desktop_config.json",
-                                 desktop, "mcpServers", False),
+                                 desktop_marker, "mcpServers", False),
         "claude-code": Client("Claude Code", home / ".claude.json", home / ".claude",
                               "mcpServers", True),
         "cursor": Client("Cursor", home / ".cursor" / "mcp.json", home / ".cursor",
@@ -123,17 +123,24 @@ def _replace(path: Path, text: str) -> None:
     """Back up, then swap the whole file: a crash mid-write must not cost other servers."""
     if path.exists():
         shutil.copy2(path, path.with_name(path.name + ".pyfa-mcp.bak"))
+    path.parent.mkdir(parents=True, exist_ok=True)  # only ever below an installed client
     temp = path.with_name(path.name + ".pyfa-mcp.tmp")
     temp.write_text(text, encoding="utf-8")
     os.replace(temp, path)
 
 
+def _read_text(client: Client) -> str:
+    try:
+        return client.config.read_text(encoding="utf-8-sig")  # Notepad writes a BOM
+    except FileNotFoundError:
+        return ""
+    except UnicodeDecodeError as exc:  # UTF-16 from PowerShell 5, or a legacy code page
+        raise _by_hand(client, f"not UTF-8 ({exc.reason})") from exc
+
+
 def _read_json(client: Client) -> tuple[dict, dict]:
     """(whole file, its servers object, attached to it); empty when there is no file yet."""
-    try:
-        text = client.config.read_text(encoding="utf-8-sig")  # Notepad writes a BOM
-    except FileNotFoundError:
-        text = ""
+    text = _read_text(client)
     try:
         root = json.loads(text) if text.strip() else {}
     except json.JSONDecodeError as exc:
@@ -151,14 +158,44 @@ _OUR_TABLE = re.compile(r'^\s*\[\s*mcp_servers\s*\.\s*"?' + NAME + r'"?\s*(\.[^\
 
 
 def _read_toml(client: Client) -> tuple[str, dict]:
+    """(text, its mcp_servers table); ("", {}) when there is no file yet."""
+    text = _read_text(client)
     try:
-        text = client.config.read_text(encoding="utf-8-sig")
-    except FileNotFoundError:
-        return "", {}
-    try:
-        return text, tomllib.loads(text)
+        data = tomllib.loads(text)
     except tomllib.TOMLDecodeError as exc:
         raise _by_hand(client, f"not valid TOML ({exc})") from exc
+    servers = data.get("mcp_servers", {})
+    if not isinstance(servers, dict):
+        raise _by_hand(client, "mcp_servers is not a table")
+    return text, servers
+
+
+def _merged(existing, entry: dict) -> dict:
+    """Our entry for this exe, keeping what the user added to an older one (env, args)."""
+    if not isinstance(existing, dict):
+        return entry
+    extra = list(existing.get("args") or [])
+    if extra[:2] == ["-m", "pyfa_mcp"]:  # a checkout's entry: those two were ours
+        extra = extra[2:]
+    return {**existing, **entry, "args": entry["args"] + extra}
+
+
+_OUR_MAIN_TABLE = re.compile(r'^\s*\[\s*mcp_servers\s*\.\s*"?' + NAME + r'"?\s*\]')
+_KEY_LINE = re.compile(r"^(\s*)(command|args)\s*=")
+
+
+def _retarget(text: str, want: dict) -> str:
+    """Rewrite the command and args lines of our table in place, nothing else."""
+    out, ours = [], False
+    for line in text.splitlines(keepends=True):
+        if _HEADER.match(line):
+            ours = bool(_OUR_MAIN_TABLE.match(line))
+        match = _KEY_LINE.match(line) if ours else None
+        if match:
+            end = "\n" if line.endswith("\n") else ""
+            line = f"{match.group(1)}{match.group(2)} = {json.dumps(want[match.group(2)])}{end}"
+        out.append(line)
+    return "".join(out)
 
 
 def _without_ours(text: str) -> str:
@@ -175,7 +212,8 @@ def _without_ours(text: str) -> str:
 def _write_toml(client: Client, text: str, want: dict | None) -> None:
     """Write `text` only if it parses and holds exactly `want` as our entry."""
     try:
-        ours = tomllib.loads(text).get("mcp_servers", {}).get(NAME)
+        servers = tomllib.loads(text).get("mcp_servers", {})
+        ours = servers.get(NAME) if isinstance(servers, dict) else "not a table"
     except tomllib.TOMLDecodeError:
         ours = "unparseable"
     if ours != want:  # e.g. `pyfa = {...}` inline under [mcp_servers]
@@ -200,7 +238,7 @@ def _check_installed(client: Client) -> None:
 def registered(client: Client) -> dict | None:
     try:
         if client.toml:
-            found = _read_toml(client)[1].get("mcp_servers", {}).get(NAME)
+            found = _read_toml(client)[1].get(NAME)
         else:
             found = _read_json(client)[1].get(NAME)
     except (RegisterError, OSError):
@@ -212,17 +250,25 @@ def add(client: Client) -> str:
     _check_installed(client)
     entry = client.entry()
     if client.toml:
-        text, data = _read_toml(client)
-        if data.get("mcp_servers", {}).get(NAME) == entry:
+        text, servers = _read_toml(client)
+        existing = servers.get(NAME)
+        if isinstance(existing, dict) and existing.get("command") == entry["command"]:
             return f"already registered in {client.config}"
-        kept = _without_ours(text)
-        if kept and not kept.endswith("\n"):
-            kept += "\n"
-        _write_toml(client, kept + ("\n" if kept.strip() else "") + _toml_table(entry), entry)
+        if isinstance(existing, dict):
+            want = _merged(existing, entry)
+            _write_toml(client, _retarget(text, want), want)
+        else:
+            kept = _without_ours(text)
+            if kept and not kept.endswith("\n"):
+                kept += "\n"
+            _write_toml(client, kept + ("\n" if kept.strip() else "") + _toml_table(entry), entry)
         return f"registered in {client.config}; restart {client.label} to use it"
     root, servers = _read_json(client)
-    if servers.get(NAME) == entry:
+    existing = servers.get(NAME)
+    # The same exe already: leave the entry be, with whatever the user added to it.
+    if isinstance(existing, dict) and existing.get("command") == entry["command"]:
         return f"already registered in {client.config}"
+    entry = _merged(existing, entry)
     cli = _claude_cli() if client.label == "Claude Code" else None
     if cli:
         # Running Claude Code sessions rewrite ~/.claude.json; let Claude Code
@@ -242,8 +288,8 @@ def remove(client: Client) -> str:
     if not client.config.exists():
         return "not registered"
     if client.toml:
-        text, data = _read_toml(client)
-        if NAME not in data.get("mcp_servers", {}):
+        text, servers = _read_toml(client)
+        if NAME not in servers:
             return "not registered"
         _write_toml(client, _without_ours(text), None)
         return f"removed from {client.config}"
@@ -263,6 +309,8 @@ def remove(client: Client) -> str:
 def run(register_name: str | None, unregister_name: str | None,
         print_config: str | None) -> int:
     """The --register / --unregister / --print-config command line; returns the exit code."""
+    for stream in (sys.stdout, sys.stderr):  # the installer sends these to a file
+        stream.reconfigure(errors="replace")
     if print_config:
         print(snippet(print_config))
         return 0
@@ -286,7 +334,7 @@ def run(register_name: str | None, unregister_name: str | None,
     for name in names:
         try:
             print(f"{table[name].label}: {action(table[name])}")
-        except (RegisterError, OSError) as exc:
+        except (RegisterError, OSError, UnicodeError) as exc:
             failed = True
             print(f"{table[name].label}: {exc}", file=sys.stderr)
     return 1 if failed else 0

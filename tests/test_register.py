@@ -294,3 +294,58 @@ def test_run_unknown_client(roots, capsys):
 def test_run_print_config(roots, capsys):
     assert register.run(None, None, "toml") == 0
     assert "[mcp_servers.pyfa]" in capsys.readouterr().out
+
+
+def test_a_config_that_is_not_utf8_is_refused_not_a_crash(roots):
+    cursor = _install("cursor")
+    cursor.config.write_bytes('{"mcpServers": {"é": {}}}'.encode("utf-16"))
+    with pytest.raises(register.RegisterError, match="pyfa"):
+        register.add(cursor)
+    codex = _install("codex")
+    register.add(codex)
+    assert register.run(None, "all", None) == 0  # the uninstaller still cleans the rest
+    assert not register.registered(codex)
+
+
+@pytest.mark.parametrize("text", ['mcp_servers = "x"\n', '[[mcp_servers]]\nname = "x"\n'])
+def test_codex_mcp_servers_that_is_not_a_table_is_refused(roots, text):
+    c = _install("codex")
+    c.config.write_text(text, encoding="utf-8")
+    assert register.registered(c) is None
+    with pytest.raises(register.RegisterError):
+        register.add(c)
+    assert c.config.read_text(encoding="utf-8") == text
+
+
+def test_store_claude_desktop_never_started_still_registers(roots):
+    package = roots.local / "Packages" / "Claude_pzs8sxrjxfjjc"
+    package.mkdir(parents=True)  # installed, but its redirected %APPDATA% is not made yet
+    c = register.clients()["claude-desktop"]
+    assert c.config == package / "LocalCache" / "Roaming" / "Claude" / "claude_desktop_config.json"
+    register.add(c)
+    assert register.registered(c) == c.entry()
+
+
+def test_reregister_keeps_what_the_user_added(roots, monkeypatch):
+    c = _install("cursor")
+    custom = {**c.entry(), "args": ["--pyfa-dir", "E:\pyfa"], "env": {"X": "1"}}
+    c.config.write_text(json.dumps({"mcpServers": {"pyfa": custom}}), encoding="utf-8")
+    before = c.config.read_bytes()
+    assert "already" in register.add(c)  # same exe: leave it alone
+    assert c.config.read_bytes() == before
+    monkeypatch.setattr(register, "command", lambda: ("D:\new\pyfa-mcp.exe", []))
+    register.add(c)
+    assert register.registered(c) == {**custom, "command": "D:\new\pyfa-mcp.exe"}
+
+
+def test_codex_reregister_keeps_what_the_user_added(roots, monkeypatch):
+    c = _install("codex")
+    cmd, _ = register.command()
+    c.config.write_text(f'[mcp_servers.pyfa]\ncommand = {json.dumps(cmd)}\n'
+                        'args = ["--pyfa-dir", "E:/pyfa"]\n\n[mcp_servers.pyfa.env]\nX = "1"\n',
+                        encoding="utf-8")
+    assert "already" in register.add(c)
+    monkeypatch.setattr(register, "command", lambda: ("D:\new\pyfa-mcp.exe", []))
+    register.add(c)
+    assert register.registered(c) == {"command": "D:\new\pyfa-mcp.exe",
+                                      "args": ["--pyfa-dir", "E:/pyfa"], "env": {"X": "1"}}
