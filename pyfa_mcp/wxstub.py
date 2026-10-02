@@ -43,6 +43,9 @@ class _Meta(type):
     def __iter__(cls):
         return iter(())
 
+    def __getitem__(cls, key):
+        return _stub("Item")
+
 
 class _Base(metaclass=_Meta):
     def __init__(self, *args, **kwargs):

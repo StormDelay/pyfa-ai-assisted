@@ -31,6 +31,8 @@ def test_wx_names_are_usable_the_way_pyfa_uses_them():
     assert Command(5).value == 5
     assert int(wx.ID_ANY) == 0
     assert (wx.ALL | wx.EXPAND) is not None
+    # graphs/data/fitShieldRegen: MainFrame.getInstance().statsPane.nameViewMap['...']
+    assert wx.Frame.getInstance().statsPane.nameViewMap["view"].showEffective is not None
 
 
 def test_two_stub_bases_do_not_break_mro():
