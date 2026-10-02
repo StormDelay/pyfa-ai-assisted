@@ -18,7 +18,7 @@ from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 
 from pyfa_mcp import (catalog, conditions, drift, eft, eosboot, evaluate, graphs, pyfadata,
-                      store)
+                      register, store)
 
 INSTRUCTIONS = """\
 pyfa-mcp computes EVE Online fits with Pyfa's own engine.
@@ -225,7 +225,17 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--pyfa-dir", type=Path, default=None,
                         help="the user's Pyfa data dir (default ~/.pyfa); read, and "
                              "written only by export_to_pyfa")
+    setup = parser.add_mutually_exclusive_group()
+    setup.add_argument("--register", metavar="CLIENT",
+                       help="add pyfa-mcp to an MCP client's config: "
+                            + ", ".join(register.clients()) + ", or auto (every one installed)")
+    setup.add_argument("--unregister", metavar="CLIENT",
+                       help="remove pyfa-mcp from a client's config, or all")
+    setup.add_argument("--print-config", nargs="?", const="json", choices=("json", "toml"),
+                       help="print the config entry for a client not in the list")
     args = parser.parse_args(argv)
+    if args.register or args.unregister or args.print_config:
+        sys.exit(register.run(args.register, args.unregister, args.print_config))
     _data_dir = args.data_dir
     pyfadata.set_dir(args.pyfa_dir)
     app.run()  # stdio

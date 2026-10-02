@@ -108,7 +108,7 @@ Code and game data always come from the same Pyfa commit. Pyfa need not be
 installed; without it, `list_fits(source="pyfa")`, `export_to_pyfa` and the
 user's custom damage/target profiles return "no Pyfa install found".
 
-### Drift checks (run at boot, reported by `status()`)
+### Drift checks (run by `status()`, at most daily for the network part)
 
 1. **Version:** installed Pyfa `version.yml` (if any) and latest
    non-prerelease Pyfa GitHub release (fetched at most daily, skipped quietly
@@ -241,6 +241,18 @@ GitHub Actions, scheduled hourly:
    Fail → open a PR with the bump and the failure output.
 5. Each run calls the workflow-enable API on itself so GitHub's 60-day
    inactivity rule never disables it (last year had a 65-day Pyfa gap).
+
+Operating it:
+
+- A "gate failed" PR is opened with GITHUB_TOKEN, so it starts no checks of
+  its own; pushing a fix to its branch does. Merging it publishes nothing:
+  push the tag `python scripts/track_pyfa.py tag` prints on the merged commit.
+- One PR per Pyfa tag: while it is open, the hourly check waits for a human.
+- If the Windows build fails after a bump was pushed, the run opens an issue
+  with the recovery steps.
+- Only the default branch publishes; `workflow_dispatch` with `dry_run`
+  exercises the gate from any branch, and `pyfa_tag` forces a target.
+- `uv.lock` is committed; CI syncs with `--locked`, and a bump re-locks.
 
 Background: over 2025-10 → 2026-10, 11 of 14 Pyfa releases added effect
 handlers for player items and none changed the eve.db schema, so tracking

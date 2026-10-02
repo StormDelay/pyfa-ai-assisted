@@ -22,6 +22,7 @@ PYFA_REPO = "pyfa-org/Pyfa"
 OWN_REPO = "StormDelay/pyfa-ai-assisted"
 BASELINE = Path(__file__).with_name("unhandled_effects.json")
 _DAY = 24 * 3600
+_RETRY_OFFLINE = 3600  # status() runs on the one eos thread: do not wait on DNS every call
 _GAMEDATA_LINE = re.compile(r"Gamedata connection: sqlite:///(.+?)[\\/]eve\.db")
 
 
@@ -71,10 +72,14 @@ def latest_release(repo: str) -> str | None:
         return entry["tag"]
     try:
         tag = _fetch_tag(repo)
+        cache[repo] = {"tag": tag, "checked": time.time()}
     except Exception:  # offline, DNS, TLS, bad JSON: say nothing, keep the last answer
-        return entry["tag"] if entry else None
-    cache[repo] = {"tag": tag, "checked": time.time()}
-    cache_file.write_text(json.dumps(cache), encoding="utf-8")
+        tag = entry["tag"] if entry else None
+        cache[repo] = {"tag": tag, "checked": time.time() - _DAY + _RETRY_OFFLINE}
+    try:
+        cache_file.write_text(json.dumps(cache), encoding="utf-8")
+    except OSError:
+        pass  # a cache we cannot write only means asking again next time
     return tag
 
 
@@ -87,9 +92,10 @@ def _own_version() -> str | None:
 
 
 def _newer(a: str | None, b: str | None) -> bool:
+    """a > b, ignoring a local part: v0.1.1+pyfa2.70.0 is release 0.1.1 built on Pyfa 2.70."""
     from packaging.version import InvalidVersion, Version
     try:
-        return bool(a and b) and Version(a) > Version(b)
+        return bool(a and b) and Version(Version(a).public) > Version(Version(b).public)
     except InvalidVersion:
         return False
 

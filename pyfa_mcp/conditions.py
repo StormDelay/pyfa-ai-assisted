@@ -223,13 +223,16 @@ def _by_name(name: str, kind: str, builtins: dict, mine: Callable[[], dict]):
     found = _match(builtins, name)
     if found is not None:
         return found
-    own = mine()
+    try:
+        own, unreadable = mine(), ""
+    except pyfadata.PyfaDataError as exc:  # a typo must not read as "update pyfa-mcp"
+        own, unreadable = {}, f" (the user's own Pyfa profiles could not be read: {exc})"
     found = _match(own, name)
     if found is not None:
         return found
     close = difflib.get_close_matches(name, [*builtins, *own], n=3, cutoff=0.5)
     hint = f" (did you mean: {', '.join(close)}?)" if close else ""
-    raise ConditionsError(f"unknown {kind} '{name}'{hint}; see conditions_format()")
+    raise ConditionsError(f"unknown {kind} '{name}'{hint}; see conditions_format(){unreadable}")
 
 
 def damage_pattern(cond: Conditions):

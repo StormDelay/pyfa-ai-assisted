@@ -126,3 +126,32 @@ def test_a_repo_without_releases_is_none(monkeypatch):
 
 
 _real_fetch = drift._fetch_tag  # captured at import, before the autouse offline patch
+
+
+def test_a_release_of_the_version_we_run_is_not_newer():
+    assert not drift._newer("v0.1.1+pyfa2.70.0", "0.1.1")
+    assert drift._newer("v0.1.2+pyfa2.70.0", "0.1.1")
+    assert drift._newer("v2.70.0", "v2.69.0")
+
+
+def test_offline_waits_an_hour_before_asking_again(fresh_cache, monkeypatch):
+    calls = []
+
+    def offline(repo):
+        calls.append(repo)
+        raise OSError("offline")
+
+    monkeypatch.setattr(drift, "_fetch_tag", offline)
+    drift.latest_release(drift.PYFA_REPO)
+    drift.latest_release(drift.PYFA_REPO)
+    assert calls == [drift.PYFA_REPO]
+
+
+def test_an_unwritable_cache_is_quiet(fresh_cache, monkeypatch):
+    monkeypatch.setattr(drift, "_fetch_tag", lambda repo: "v9.9.9")
+
+    def read_only(self, *args, **kwargs):
+        raise PermissionError("read-only")
+
+    monkeypatch.setattr(drift.Path, "write_text", read_only)
+    assert drift.latest_release(drift.PYFA_REPO) == "v9.9.9"
