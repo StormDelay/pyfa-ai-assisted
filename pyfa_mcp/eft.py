@@ -25,6 +25,9 @@ _HEADER = re.compile(r"^\[[^,\]]+,.*\]$")  # fit names may hold "]"
 _COUNT = re.compile(r"^(.*?)\s+x(\d+)$")
 _SLOT_LABELS = {1: "low", 2: "mid", 3: "high", 4: "rig", 5: "subsystem"}
 
+# What a line without a count may name; anything else is cargo and needs "xN".
+_FITTABLE = ("Module", "Subsystem", "Implant", "Structure Module", "Charge")
+
 
 class DroppedModule(NamedTuple):
     name: str
@@ -155,6 +158,10 @@ def _line_errors(text: str) -> list[str]:
     for item, charge, count in _item_lines(text):
         if count is None and item.category.name in ("Drone", "Fighter"):
             errors.append(f"'{item.name}' needs a count, e.g. '{item.name} x5'")
+        if count is None and item.category.name not in (*_FITTABLE, "Drone", "Fighter"):
+            errors.append(f"'{item.name}' is a {item.category.name.lower()}, not something "
+                          f"that can be fitted; a cargo line needs a count, e.g. "
+                          f"'{item.name} x1'")
         if charge:
             loaded = _lookup(charge)
             if loaded is not None and loaded.category.name != "Charge":

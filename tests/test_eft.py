@@ -123,3 +123,17 @@ def test_second_implant_in_a_slot_is_recorded(booted, no_fits_left):
         assert "slot" in fit.dropped_modules[0].reason
     finally:
         _delete(fit)
+
+
+def test_unfittable_item_line_is_an_error(booted, no_fits_left):
+    with pytest.raises(eft.EftError, match="'Capital Armor Plates' is a commodity"):
+        eft.import_fit("[Wyvern, x]\nCapital Armor Plates\n", temp=True)
+
+
+def test_unfittable_item_with_a_count_is_cargo(booted, no_fits_left):
+    from service.fit import Fit
+    fit = eft.import_fit("[Rifter, x]\n\n\n\n\nCapital Armor Plates x3\n", temp=True)
+    try:
+        assert [c.item.name for c in fit.cargo] == ["Capital Armor Plates"]
+    finally:
+        Fit.deleteFit(fit.ID)
