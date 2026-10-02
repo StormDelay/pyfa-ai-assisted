@@ -18,6 +18,7 @@ def test_tools_return_data(booted, zealot_eft, no_fits_left):
     result = server.evaluate_fit(zealot_eft)
     assert result["fit"] == "Test Zealot"
     assert server.status()["pyfa_version"] == "v2.69.0"
+    assert server.status()["pyfa_install"]["found"] is False
     assert "fields" in server.conditions_format()
 
 
@@ -41,3 +42,13 @@ def test_smoke_over_stdio(booted, tmp_path):
          sys.executable, "-m", "pyfa_mcp", "--data-dir", str(tmp_path)],
         capture_output=True, text=True, timeout=300, cwd=ROOT)
     assert proc.returncode == 0, proc.stdout + proc.stderr
+
+
+def test_pyfa_fits_without_pyfa(booted):
+    from mcp.server.mcpserver.exceptions import ToolError
+    with pytest.raises(ToolError, match="no Pyfa install"):
+        server.list_fits(source="pyfa")
+
+
+def test_pyfa_fits_over_the_server(pyfa_home):
+    assert [f["name"] for f in server.list_fits(source="pyfa")] == ["Home Zealot"]

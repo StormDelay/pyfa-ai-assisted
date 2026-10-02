@@ -21,7 +21,7 @@ from typing import NamedTuple
 
 from pyfa_mcp.eosboot import TEMP_NOTE
 
-_HEADER = re.compile(r"^\[[^,\]]+,[^\]]*\]$")
+_HEADER = re.compile(r"^\[[^,\]]+,.*\]$")  # fit names may hold "]"
 _COUNT = re.compile(r"^(.*?)\s+x(\d+)$")
 _SLOT_LABELS = {1: "low", 2: "mid", 3: "high", 4: "rig", 5: "subsystem"}
 

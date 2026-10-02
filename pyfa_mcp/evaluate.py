@@ -1,7 +1,7 @@
 """Evaluate fits under conditions, on temporary copies that never outlive a call."""
 from __future__ import annotations
 
-from pyfa_mcp import conditions, eft, eosboot, stats, store
+from pyfa_mcp import conditions, drift, eft, eosboot, stats, store
 
 
 class Scratch:
@@ -43,8 +43,10 @@ def _evaluate_parsed(ref: str, cond) -> dict:
         applied = conditions.apply(fit, cond, scratch.add_fit)
         result = stats.fit_stats(fit, conditions.spool_of(cond))
         name, ship = fit.name, fit.ship.item.name
+        effect_warnings = drift.effect_warnings(fit)
     return {"fit": name, "ship": ship, "applied": applied,
-            "warnings": warnings_for(result), **result}
+            "warnings": warnings_for(result) + effect_warnings + store.pyfa_warnings(ref),
+            **result}
 
 
 def evaluate(ref: str, raw_conditions: dict | None) -> dict:

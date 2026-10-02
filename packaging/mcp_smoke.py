@@ -14,7 +14,7 @@ import sys
 
 TOOLS = {"search_items", "list_ships", "item_info", "evaluate_fit", "compare_fits",
          "fit_graph", "graph_options", "conditions_format", "status", "save_fit",
-         "list_fits", "get_fit", "delete_fit"}
+         "list_fits", "get_fit", "delete_fit", "export_to_pyfa"}
 FIT = "[Rifter, smoke]\n200mm AutoCannon II, EMP S\n"
 
 
