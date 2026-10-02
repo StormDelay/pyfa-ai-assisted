@@ -147,26 +147,8 @@ def _local(item, source: str, slot: str, charge=None) -> Candidate:
         active=item.isType("active"), modifies=_modifies(item))
 
 
-def _valid_charges(item) -> list:
-    """Module.getValidCharges, minus eos.db.getGroup: its cache is keyed by id alone, so a
-    group id equal to an already-fetched item id returns that Item (no `.items`)."""
-    from eos.db import get_gamedata_session
-    from eos.gamedata import Group
-    from eos.saveddata.module import Module
-
-    mod = Module(item)
-    out = {}
-    for i in range(5):
-        gid = mod.getModifiedItemAttr(f"chargeGroup{i}", None)
-        group = get_gamedata_session().get(Group, int(gid)) if gid else None
-        for c in group.items if group else ():
-            if c.published and mod.isValidCharge(c):
-                out[c.ID] = c
-    return sorted(out.values(), key=lambda c: c.ID)
-
-
 def _charges(item, allowed) -> list:
-    return [c for c in _valid_charges(item) if allowed(catalog._meta(c))]
+    return [c for c in catalog.valid_charges(item) if allowed(catalog._meta(c))]
 
 
 def _pod(item, sources) -> list[Candidate]:
@@ -218,7 +200,7 @@ def _bursts(allowed) -> list[Candidate]:
     for item in catalog.published_items(groups=("Command Burst",)):
         if not allowed(catalog._meta(item)):
             continue
-        for charge in _valid_charges(item):
+        for charge in catalog.valid_charges(item):
             booster = f"[{_BURST_HULL}, {item.name}]\n\n\n{item.name}, {charge.name}\n"
             out.append(Candidate(
                 name=f"{item.name} + {charge.name}", source="command_burst", slot="external",

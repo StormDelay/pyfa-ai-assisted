@@ -485,7 +485,7 @@ _BOOSTER_GRADES = ("Synth", "Standard", "Improved", "Strong")
 def beyond_the_fit() -> dict:
     """Everything that changes a fit's numbers without being a module on the hull."""
     from eos.saveddata.module import Module
-    from pyfa_mcp.catalog import published_items
+    from pyfa_mcp.catalog import published_items, valid_charges
 
     implants = published_items(categories=("Implant",))
     pods = [i for i in implants if i.group.name != "Booster"]
@@ -494,7 +494,7 @@ def beyond_the_fit() -> dict:
                    if a.startswith("ImplantSet")})
     drugs = sorted({" ".join(n.split()[1:]) if n.split()[0] in _BOOSTER_GRADES else n
                     for n in boosters})
-    bursts = {i.name: sorted(c.name for c in Module(i).getValidCharges() if c.published)
+    bursts = {i.name: sorted(c.name for c in valid_charges(i))
               for i in published_items(groups=("Command Burst",))}
     environment: dict[str, list[str]] = {}
     for item in published_items(groups=Module.SYSTEM_GROUPS):

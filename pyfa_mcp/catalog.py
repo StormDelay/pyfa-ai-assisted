@@ -15,6 +15,28 @@ class CatalogError(LookupError):
         return str(self.args[0]) if self.args else ""
 
 
+def valid_charges(item) -> list:
+    """Published charges `item` takes, sorted by ID.
+
+    Module.getValidCharges breaks here: eos.db.getGroup shares a cache keyed by id alone
+    (vendor/Pyfa/eos/db/gamedata/queries.py cachedQuery), so a group id equal to an
+    already-fetched item id returns that Item, which has no `.items`.
+    """
+    from eos.db import get_gamedata_session
+    from eos.gamedata import Group
+    from eos.saveddata.module import Module
+
+    mod = Module(item)
+    out = {}
+    for i in range(5):
+        gid = mod.getModifiedItemAttr(f"chargeGroup{i}", None)
+        group = get_gamedata_session().get(Group, int(gid)) if gid else None
+        for c in group.items if group else ():
+            if c.published and mod.isValidCharge(c):
+                out[c.ID] = c
+    return sorted(out.values(), key=lambda c: c.ID)
+
+
 def _meta(item) -> str:
     return item.metaGroup.name if item.metaGroup is not None else "Tech I"
 

@@ -49,3 +49,22 @@ def test_item_info(booted):
 def test_item_info_unknown(booted):
     with pytest.raises(catalog.CatalogError, match="Zealot"):
         catalog.item_info("Zealout")
+
+
+def test_valid_charges_survives_the_group_id_cache_collision(booted):
+    import eos.db
+    from eos.db.gamedata import queries
+    from eos.saveddata.module import Module
+
+    # Light Missile Launchers take charge group 394, which is also Shield Recharger II's id.
+    launcher = eos.db.getItem("Civilian Light Missile Launcher")
+    eos.db.getItem(394)  # eos's id-keyed cache now hands 394 to getGroup too
+    try:
+        with pytest.raises(AttributeError):
+            Module(launcher).getValidCharges()  # the upstream bug this pins
+        charges = catalog.valid_charges(launcher)
+        assert charges and all(c.published for c in charges)
+    finally:
+        queries.cache.pop((394, None), None)
+    sebo = eos.db.getItem("Sensor Booster II")
+    assert "Targeting Range Script" in [c.name for c in catalog.valid_charges(sebo)]
