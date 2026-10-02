@@ -6,7 +6,8 @@
     python scripts/track_pyfa.py bump      after vendor/Pyfa moved to a new release: take
                                            Python and eos's dependency versions from it,
                                            and raise our patch version
-    python scripts/track_pyfa.py notes OLD NEW   reference-fit changes, as Markdown
+    python scripts/track_pyfa.py notes OLD NEW [BUMP]   release notes: the changes `bump`
+                                           printed (file BUMP), then reference-fit changes
 
 Standard library only: the bump job runs it before any environment exists.
 """
@@ -22,8 +23,18 @@ ROOT = Path(__file__).resolve().parent.parent
 PYFA = ROOT / "vendor" / "Pyfa"
 PYPROJECT = ROOT / "pyproject.toml"
 GUI_ONLY = {"matplotlib", "wxpython"}  # Pyfa's own window; eos never imports them
-# One pinned dependency per line, as in [project] dependencies.
-_PIN = re.compile(r'^([ \t]*")([A-Za-z0-9_.\-]+)==([^"]+)(",?)[ \t]*$', re.M)
+# One pinned dependency per line in [project] dependencies; an environment
+# marker after the version is kept.
+_PIN = re.compile(r'^([ \t]*")([A-Za-z0-9_.\-]+)==([^";\s]+)([^"]*)(",?)[ \t]*$', re.M)
+_DEPS = re.compile(r'^dependencies = \[\n(.*?)^\]', re.M | re.S)
+
+
+def _project_dependencies(text: str) -> tuple[int, int]:
+    """(start, end) of the lines inside [project]'s dependencies = [ ... ]."""
+    section = re.search(r"^\[project\][ \t]*$", text, re.M)
+    following = re.compile(r"^\[", re.M).search(text, section.end())
+    block = _DEPS.search(text, section.end(), following.start() if following else len(text))
+    return block.start(1), block.end(1)
 
 
 def _norm(name: str) -> str:
@@ -50,10 +61,17 @@ def bump_patch(text: str) -> str:
 
 
 def sync_pins(text: str, lock: str, python: str, pyfa_project: str) -> tuple[str, list[str]]:
-    """Our pyproject with eos's pins and the Python version taken from Pyfa's."""
+    """Our pyproject with eos's pins and the Python version taken from Pyfa's.
+
+    Only [project] dependencies are touched: the dev group pins its own tools.
+    """
     locked = {_norm(p["name"]): p["version"] for p in tomllib.loads(lock)["package"]}
-    wanted = {_norm(re.match(r"[A-Za-z0-9_.\-]+", dep).group(0))
-              for dep in tomllib.loads(pyfa_project)["project"]["dependencies"]} - GUI_ONLY
+    wanted = {}  # name -> environment marker ("" for none)
+    for dep in tomllib.loads(pyfa_project)["project"]["dependencies"]:
+        requirement, _, marker = dep.partition(";")
+        name = _norm(re.match(r"[A-Za-z0-9_.\-]+", requirement.strip()).group(0))
+        if name not in GUI_ONLY:
+            wanted[name] = marker.strip()
     changes: list[str] = []
     ours: set[str] = set()
 
@@ -63,14 +81,17 @@ def sync_pins(text: str, lock: str, python: str, pyfa_project: str) -> tuple[str
         new = locked.get(_norm(name), old)
         if new != old:
             changes.append(f"{name} {old} -> {new}")
-        return f"{match.group(1)}{name}=={new}{match.group(4)}"
+        return f"{match.group(1)}{name}=={new}{match.group(4)}{match.group(5)}"
 
-    text = _PIN.sub(repin, text)
+    start, end = _project_dependencies(text)
+    deps = _PIN.sub(repin, text[start:end])
     # A dependency Pyfa gained: without it the frozen build would silently lack it.
-    for name in sorted(wanted - ours):
-        last = list(_PIN.finditer(text))[-1]
-        text = f'{text[:last.end()]}\n    "{name}=={locked[name]}",{text[last.end():]}'
+    for name in sorted(set(wanted) - ours):
+        requirement = f"{name}=={locked[name]}" + (f"; {wanted[name]}" if wanted[name] else "")
+        last = list(_PIN.finditer(deps))[-1]
+        deps = f"{deps[:last.end()]}\n    {json.dumps(requirement)},{deps[last.end():]}"
         changes.append(f"{name} {locked[name]} (new in Pyfa)")
+    text = text[:start] + deps + text[end:]
     major, minor = python.strip().split(".")[:2]
     text = re.sub(r'^requires-python = "[^"]+"',
                   f'requires-python = ">={major}.{minor},<{major}.{int(minor) + 1}"',
@@ -79,10 +100,12 @@ def sync_pins(text: str, lock: str, python: str, pyfa_project: str) -> tuple[str
 
 
 def _fmt(value) -> str:
-    return f"{value:g}" if isinstance(value, float) else str(value)
+    # Full precision: reference values reach 10^5-10^6, where 6 significant
+    # digits would print a real change as "257932 -> 257932".
+    return repr(round(value, 6)) if isinstance(value, float) else str(value)
 
 
-def notes(old: dict, new: dict) -> str:
+def notes(old: dict, new: dict, changes: list[str] = ()) -> str:
     lines = []
     for case in sorted(old.keys() | new.keys()):
         if case not in new:
@@ -95,7 +118,8 @@ def notes(old: dict, new: dict) -> str:
                 if before != after:
                     lines.append(f"- {case} `{key}`: {_fmt(before)} → {_fmt(after)}")
     body = "\n".join(lines) if lines else "No reference-fit value changed."
-    return f"### Reference fits\n\n{body}\n"
+    deps = "".join(f"- {change}\n" for change in changes)
+    return (f"### Dependencies\n\n{deps}\n" if deps else "") + f"### Reference fits\n\n{body}\n"
 
 
 def bump() -> None:
@@ -121,8 +145,11 @@ if __name__ == "__main__":
         print(pyfa_version())
     elif command == "bump":
         bump()
-    elif command == "notes" and len(args) == 2:
-        old, new = (json.loads(Path(a).read_text(encoding="utf-8")) for a in args)
-        print(notes(old, new), end="")
+    elif command == "notes" and len(args) in (2, 3):
+        old, new = (json.loads(Path(a).read_text(encoding="utf-8")) for a in args[:2])
+        # bump's output: one line per change, then the release tag.
+        changes = (Path(args[2]).read_text(encoding="utf-8").splitlines()[:-1]
+                   if len(args) == 3 else [])
+        print(notes(old, new, changes), end="")
     else:
         sys.exit(__doc__)

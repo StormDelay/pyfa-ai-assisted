@@ -71,6 +71,11 @@ jobs:
       tag: ${{ steps.publish.outputs.tag }}
       notes: ${{ steps.publish.outputs.notes }}
     steps:
+      - name: Only the default branch publishes
+        if: env.DRY_RUN != 'true' && github.ref != format('refs/heads/{0}', github.event.repository.default_branch)
+        run: |
+          echo "dispatched from $GITHUB_REF: only the default branch may publish; use dry_run" >&2
+          exit 1
       - uses: actions/checkout@v7
         with:
           submodules: true
@@ -87,14 +92,19 @@ jobs:
         run: |
           set -o pipefail
           {
-            python3 scripts/track_pyfa.py bump
-            uv sync
+            python3 scripts/track_pyfa.py bump | tee "$RUNNER_TEMP/bump.txt"
+            pyfa="v$(python3 scripts/track_pyfa.py pyfa)"
+            if [ "$pyfa" != "$TARGET" ]; then
+              echo "vendor/Pyfa/version.yml says $pyfa, but the release is $TARGET" >&2
+              exit 1
+            fi
+            uv sync   # re-locks: uv.lock moves with the new pins
             uv run python scripts/make_evedb.py
             cp tests/reference/expected.json "$RUNNER_TEMP/expected-before.json"
             # Every reference fit has to evaluate; a changed number does not block.
             uv run python scripts/record_reference.py
             uv run python scripts/track_pyfa.py notes "$RUNNER_TEMP/expected-before.json" \
-              tests/reference/expected.json > "$RUNNER_TEMP/notes.md"
+              tests/reference/expected.json "$RUNNER_TEMP/bump.txt" > "$RUNNER_TEMP/notes.md"
             # Boots, every tool over stdio, effect coverage, the reference fits as recorded.
             uv run pytest -q
           } 2>&1 | tee "$RUNNER_TEMP/gate.log"

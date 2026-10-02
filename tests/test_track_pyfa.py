@@ -75,7 +75,7 @@ def test_notes_list_every_changed_value():
     new = {"zealot": {"tank.ehp.total": 1012.5, "capacitor.stable": True},
            "fresh": {"tank.ehp.total": 2.0}}
     text = T.notes(old, new)
-    assert "zealot `tank.ehp.total`: 1000 → 1012.5" in text
+    assert "zealot `tank.ehp.total`: 1000.0 → 1012.5" in text
     assert "capacitor.stable" not in text
     assert "gone: no longer computed" in text and "fresh: new reference fit" in text
 
@@ -83,3 +83,40 @@ def test_notes_list_every_changed_value():
 def test_notes_when_nothing_moved():
     same = {"zealot": {"tank.ehp.total": 1000.0}}
     assert "No reference-fit value changed." in T.notes(same, same)
+
+
+def test_notes_keep_large_values_readable():
+    text = T.notes({"thanatos": {"tank.ehp.armor": 257931.5, "big": 1234567.0}},
+                   {"thanatos": {"tank.ehp.armor": 257931.9, "big": 1234568.0}})
+    assert "257931.5 → 257931.9" in text
+    assert "1234567.0 → 1234568.0" in text
+
+
+def test_notes_list_dependency_changes():
+    same = {"zealot": {"tank.ehp.total": 1.0}}
+    text = T.notes(same, same, ["logbook 1.9.2 -> 1.9.3"])
+    assert "### Dependencies" in text and "- logbook 1.9.2 -> 1.9.3" in text
+
+
+def test_new_dependency_keeps_its_platform_marker():
+    pyfa = PYFA_PROJECT.replace('"new_dep==1.0"', '"new_dep==1.0 ; sys_platform == \'win32\'"')
+    text, _ = T.sync_pins(OURS, LOCK, "3.14", pyfa)
+    assert "new-dep==1.0; sys_platform == 'win32'" in tomllib.loads(text)["project"]["dependencies"]
+
+
+def test_repin_keeps_an_existing_marker():
+    ours = OURS.replace('"logbook==1.9.2",', '"logbook==1.9.2; sys_platform != \'emscripten\'",')
+    text, _ = T.sync_pins(ours, LOCK, "3.14", PYFA_PROJECT)
+    assert "logbook==1.9.3; sys_platform != 'emscripten'" in \
+        tomllib.loads(text)["project"]["dependencies"]
+
+
+def test_only_project_dependencies_are_repinned():
+    ours = OURS.replace('dev = ["pytest>=8", "pyinstaller==6.22.3"]',
+                        'dev = [\n    "pytest>=8",\n    "pyinstaller==6.22.3",\n]')
+    lock = LOCK + '[[package]]\nname = "pyinstaller"\nversion = "6.21.0"\n'
+    text, changes = T.sync_pins(ours, lock, "3.14", PYFA_PROJECT)
+    data = tomllib.loads(text)
+    assert data["dependency-groups"]["dev"] == ["pytest>=8", "pyinstaller==6.22.3"]
+    assert "new-dep==1.0" in data["project"]["dependencies"]
+    assert not any("pyinstaller" in c for c in changes)

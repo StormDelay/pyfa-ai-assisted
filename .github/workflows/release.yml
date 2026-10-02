@@ -38,7 +38,7 @@ jobs:
           submodules: true
           fetch-depth: 1
       - uses: astral-sh/setup-uv@v10.2.0   # no moving major tag is published
-      - run: uv sync
+      - run: uv sync --locked   # the versions the tests ran with
 
       - name: The tag has to name this tree's version and Pyfa
         if: env.PUBLISH == 'true'
