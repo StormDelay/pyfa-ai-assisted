@@ -87,6 +87,7 @@ def boot(data_dir: Path | None = None) -> Path:
 
         _check_engine(save_db)
         _purge_temp_fits()
+        purge_temp_profiles()
 
     _booted_dir = data_dir
     return data_dir
@@ -107,3 +108,20 @@ def _purge_temp_fits() -> None:
     for fit in Fit.getAllFits():
         if fit.notes == TEMP_NOTE:
             Fit.deleteFit(fit.ID)
+
+
+def purge_temp_profiles() -> None:
+    """Delete custom damage/target profiles made for an evaluation.
+
+    A fit refers to a custom profile through a relationship, so Pyfa saves
+    the profile along with the (temporary) fit; they carry TEMP_NOTE as name.
+    """
+    import eos.db
+    from eos.saveddata.damagePattern import DamagePattern
+    from eos.saveddata.targetProfile import TargetProfile
+
+    session = eos.db.saveddata_session
+    for cls in (DamagePattern, TargetProfile):
+        for profile in session.query(cls).filter(cls.rawName == TEMP_NOTE).all():
+            session.delete(profile)
+    eos.db.commit()
