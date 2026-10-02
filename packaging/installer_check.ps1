@@ -1,7 +1,7 @@
 <# Install a built pyfa-mcp setup silently into a throwaway user profile, and
    check it registers, serves MCP and uninstalls cleanly.
 
-     powershell -File packaging\installer_check.ps1 -Setup dist\pyfa-mcp-v0.1.0-pyfa2.69.0-setup.exe
+     powershell -ExecutionPolicy Bypass -File packaging\installer_check.ps1 -Setup dist\pyfa-mcp-v0.1.0-pyfa2.69.0-setup.exe
 
    Only the Codex task is on, and USERPROFILE / HOME / APPDATA / LOCALAPPDATA
    point into the throwaway profile: the installer's client checks and

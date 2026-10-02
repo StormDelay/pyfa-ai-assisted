@@ -1,0 +1,91 @@
+name: release
+
+# A tag push publishes; pyfa-bump.yml calls this after pushing its own tag
+# (a tag pushed with GITHUB_TOKEN starts no workflow by itself); a PR that
+# touches packaging gets the same build and checks, without publishing.
+on:
+  push:
+    tags: ["v*"]
+  workflow_call:
+    inputs:
+      tag:
+        type: string
+        required: true
+      notes:
+        type: string
+        required: false
+        default: ""
+  pull_request:
+    paths:
+      - "packaging/**"
+      - ".github/workflows/release.yml"
+      - "pyproject.toml"
+      - "vendor/Pyfa"
+
+permissions:
+  contents: write   # gh release create
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    env:
+      TAG: ${{ inputs.tag || github.ref_name }}
+      PUBLISH: ${{ github.event_name != 'pull_request' }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+          submodules: true
+          fetch-depth: 1
+      - uses: astral-sh/setup-uv@v10
+      - run: uv sync
+
+      - name: The tag has to name this tree's version and Pyfa
+        if: env.PUBLISH == 'true'
+        shell: bash
+        run: |
+          want=$(uv run python scripts/track_pyfa.py tag)
+          if [ "$want" != "$TAG" ]; then
+            echo "tag $TAG, but pyproject.toml and vendor/Pyfa make this $want" >&2
+            exit 1
+          fi
+
+      - run: uv run python scripts/make_evedb.py
+      - run: uv run pytest -q
+      - run: uv run pyinstaller --noconfirm packaging/pyfa-mcp.spec
+
+      - name: The build has to serve MCP
+        shell: bash
+        run: |
+          uv run python packaging/mcp_smoke.py "$(cygpath -w "$PWD/dist/pyfa-mcp/pyfa-mcp.exe")" \
+            --data-dir "$RUNNER_TEMP/data" --pyfa-dir "$RUNNER_TEMP/no-pyfa"
+
+      - name: Build the installer
+        shell: pwsh
+        run: |
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) { choco install innosetup -y --no-progress }
+          $version = uv run python scripts/track_pyfa.py version
+          $pyfa = uv run python scripts/track_pyfa.py pyfa
+          & $iscc /Q "/DAppVersion=$version" "/DPyfaVersion=$pyfa" packaging\pyfa-mcp.iss
+          exit $LASTEXITCODE
+
+      - name: The installer has to register, serve and uninstall
+        shell: pwsh
+        run: |
+          $setup = (Get-Item dist\pyfa-mcp-v*-setup.exe).FullName
+          uv run powershell -NoProfile -ExecutionPolicy Bypass -File packaging\installer_check.ps1 -Setup $setup
+          exit $LASTEXITCODE
+
+      - name: Publish
+        if: env.PUBLISH == 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NOTES: ${{ inputs.notes }}
+        run: |
+          if [ -n "$NOTES" ]; then
+            gh release create "$TAG" dist/pyfa-mcp-v*-setup.exe --title "$TAG" --notes "$NOTES"
+          else
+            gh release create "$TAG" dist/pyfa-mcp-v*-setup.exe --title "$TAG" --generate-notes
+          fi

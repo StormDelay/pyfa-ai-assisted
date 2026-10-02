@@ -1,0 +1,141 @@
+name: pyfa-bump
+
+on:
+  schedule:
+    - cron: "23 * * * *"   # hourly
+  workflow_dispatch:
+    inputs:
+      pyfa_tag:
+        description: "Pyfa tag to move to (default: the latest release)"
+        type: string
+        required: false
+      dry_run:
+        description: "Run the gate, publish nothing"
+        type: boolean
+        default: false
+
+concurrency:
+  group: pyfa-bump
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: write   # the enable call below
+    outputs:
+      target: ${{ steps.look.outputs.target }}
+    steps:
+      - name: Keep this schedule alive
+        # GitHub disables a scheduled workflow after 60 days without repo
+        # activity; Pyfa once went 65 days between releases.
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh api -X PUT "repos/$GITHUB_REPOSITORY/actions/workflows/pyfa-bump.yml/enable"
+      - uses: actions/checkout@v7   # no submodules: the pin is the gitlink's commit
+      - id: look
+        env:
+          GH_TOKEN: ${{ github.token }}
+          FORCED: ${{ inputs.pyfa_tag }}
+        run: |
+          latest=${FORCED:-$(gh api repos/pyfa-org/Pyfa/releases/latest -q .tag_name)}
+          want=$(gh api "repos/pyfa-org/Pyfa/commits/$latest" -q .sha)
+          pinned=$(git ls-tree HEAD vendor/Pyfa | awk '{print $3}')
+          echo "pinned $pinned; $latest is $want"
+          if [ -n "$FORCED" ] || [ "$want" != "$pinned" ]; then
+            if [ -z "$FORCED" ] && [ -n "$(gh pr list --head "pyfa-bump/$latest" --state open --json number -q '.[].number')" ]; then
+              echo "a PR for $latest is already open; waiting for a human"
+            else
+              echo "target=$latest" >> "$GITHUB_OUTPUT"
+            fi
+          fi
+
+  bump:
+    needs: check
+    if: needs.check.outputs.target != ''
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    env:
+      TARGET: ${{ needs.check.outputs.target }}
+      DRY_RUN: ${{ inputs.dry_run || false }}
+    outputs:
+      tag: ${{ steps.publish.outputs.tag }}
+      notes: ${{ steps.publish.outputs.notes }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: true
+          fetch-depth: 1
+      - name: Move vendor/Pyfa to the release
+        run: |
+          git -C vendor/Pyfa fetch --depth 1 origin "refs/tags/$TARGET:refs/tags/$TARGET"
+          git -C vendor/Pyfa checkout --quiet "$TARGET"
+      - uses: astral-sh/setup-uv@v10
+
+      - name: Gate
+        id: gate
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          {
+            python3 scripts/track_pyfa.py bump
+            uv sync
+            uv run python scripts/make_evedb.py
+            cp tests/reference/expected.json "$RUNNER_TEMP/expected-before.json"
+            # Every reference fit has to evaluate; a changed number does not block.
+            uv run python scripts/record_reference.py
+            uv run python scripts/track_pyfa.py notes "$RUNNER_TEMP/expected-before.json" \
+              tests/reference/expected.json > "$RUNNER_TEMP/notes.md"
+            # Boots, every tool over stdio, effect coverage, the reference fits as recorded.
+            uv run pytest -q
+          } 2>&1 | tee "$RUNNER_TEMP/gate.log"
+
+      - name: Publish the bump
+        id: publish
+        if: steps.gate.outcome == 'success' && env.DRY_RUN != 'true'
+        run: |
+          tag=$(python3 scripts/track_pyfa.py tag)
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -am "Track Pyfa $TARGET"
+          git tag "$tag"
+          git push origin "HEAD:${{ github.event.repository.default_branch }}" "$tag"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          { echo "notes<<PYFA_BUMP_NOTES"; echo "Tracks Pyfa $TARGET."; echo
+            cat "$RUNNER_TEMP/notes.md"; echo "PYFA_BUMP_NOTES"; } >> "$GITHUB_OUTPUT"
+
+      - name: Open a PR with the failure
+        if: steps.gate.outcome != 'success' && env.DRY_RUN != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          branch="pyfa-bump/$TARGET"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git switch -c "$branch"
+          git commit -am "Track Pyfa $TARGET (gate failed)"
+          git push --force origin "$branch"
+          fence='```'
+          { echo "The automatic move to Pyfa $TARGET failed its gate."; echo
+            echo "$fence"; tail -n 150 "$RUNNER_TEMP/gate.log"; echo "$fence"; echo
+            cat "$RUNNER_TEMP/notes.md" 2>/dev/null || true; } > "$RUNNER_TEMP/body.md"
+          gh pr create --base "${{ github.event.repository.default_branch }}" --head "$branch" \
+            --title "Track Pyfa $TARGET (gate failed)" --body-file "$RUNNER_TEMP/body.md"
+
+      - name: Say how the gate went
+        run: |
+          cat "$RUNNER_TEMP/notes.md" >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || true
+          test "${{ steps.gate.outcome }}" = success
+
+  release:
+    needs: bump
+    if: needs.bump.outputs.tag != ''
+    permissions:
+      contents: write
+    uses: ./.github/workflows/release.yml
+    with:
+      tag: ${{ needs.bump.outputs.tag }}
+      notes: ${{ needs.bump.outputs.notes }}

@@ -1,0 +1,25 @@
+name: tests
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  pytest:
+    # Linux: the engine, the store and every test are platform-neutral, and
+    # Linux minutes are a tenth of Windows' on a private repo. The Windows
+    # build is checked by release.yml.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: true
+          fetch-depth: 1   # 279 MB of Pyfa history is not needed for its tree
+      - uses: astral-sh/setup-uv@v10
+      - run: uv sync
+      - run: uv run python scripts/make_evedb.py
+      - run: uv run pytest -q
