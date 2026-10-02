@@ -84,3 +84,14 @@ def pyfa_home(booted, tmp_path, zealot_eft):
     yield home
     pyfadata.close()
     pyfadata.set_dir(previous)
+
+
+@pytest.fixture(autouse=True)
+def _offline(monkeypatch):
+    """Tests never call GitHub."""
+    from pyfa_mcp import drift
+
+    def no_network(repo):
+        raise OSError("no network in tests")
+
+    monkeypatch.setattr(drift, "_fetch_tag", no_network)

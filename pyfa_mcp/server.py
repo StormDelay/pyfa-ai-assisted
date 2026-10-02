@@ -17,7 +17,8 @@ from pathlib import Path
 from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 
-from pyfa_mcp import catalog, conditions, eft, eosboot, evaluate, graphs, pyfadata, store
+from pyfa_mcp import (catalog, conditions, drift, eft, eosboot, evaluate, graphs, pyfadata,
+                      store)
 
 INSTRUCTIONS = """\
 pyfa-mcp computes EVE Online fits with Pyfa's own engine.
@@ -164,7 +165,8 @@ def conditions_format() -> dict:
 @app.tool()
 @_tool
 def status() -> dict:
-    """Versions and health of the engine. Relay any warnings to the user."""
+    """Versions (pyfa-mcp's Pyfa, the user's Pyfa, latest releases), whether the user's
+    Pyfa data was found, and effects Pyfa does not compute. Relay every warning."""
     import eos.db
     with eos.db.gamedata_engine.connect() as connection:
         meta = dict(connection.exec_driver_sql(
@@ -172,7 +174,7 @@ def status() -> dict:
     return {"pyfa_version": eosboot.pyfa_version(),
             "game_client_build": meta.get("client_build"),
             "data_dir": str(eosboot.boot(_data_dir)),
-            "warnings": []}
+            **drift.report()}
 
 
 # --- storage -----------------------------------------------------------------
