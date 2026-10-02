@@ -82,3 +82,49 @@ def test_find_modifiers_resolves_stored_fits_for_workers(booted, no_fits_left, m
     finally:
         store.delete_fit("test phenomena")
         pool.configure(before)
+
+
+def test_full_racks_are_measured_by_swapping_and_overheat_is_reported(booted, no_fits_left):
+    result = search.find_modifiers(wyvern.BRIEF, ["tank.ehp.total"], sources=["module"],
+                                   meta=["all"], raw_conditions=wyvern.CONDITIONS,
+                                   expand=["Shield Hardener"])
+    rows = result["candidates"]
+    assert any(n.startswith("its slots are full: measured replacing")
+               for c in rows for n in c["notes"])
+    assert any(c["delta_overheated"] and c["delta_overheated"]["tank.ehp.total"]
+               > c["delta"]["tank.ehp.total"] for c in rows)
+
+
+def test_identical_twins_each_get_a_row(booted, no_fits_left):
+    from pyfa_mcp import bench
+    with bench.Bench(search._baseline_eft("Wyvern"), {}) as b:
+        found = search._pool(b.fit, {"module"}, ["all"])
+    result = search.find_modifiers("Wyvern", ["tank.ehp.total"], sources=["module"],
+                                   meta=["all"], expand=["*"])
+    by = {c["name"]: c for c in result["candidates"]}
+    pairs = [(k, t) for k, ts in found.duplicates.items() if k in by for t in ts]
+    assert pairs
+    for kept, twin in pairs:
+        assert by[twin.name]["delta"] == by[kept]["delta"]
+        assert by[twin.name]["type_id"] == twin.type_id
+    assert not any("identical to" in n for c in by.values() for n in c["notes"])
+
+
+def test_pool_cache_separates_bare_and_fitted_tengu(booted, no_fits_left):
+    fitted = ("[Tengu, t]\n\nTengu Core - Augmented Graviton Reactor\n"
+              "Tengu Defensive - Covert Reconfiguration\n"
+              "Tengu Offensive - Accelerated Ejection Bay\n"
+              "Tengu Propulsion - Chassis Optimization\n")
+    from pyfa_mcp import bench
+    pools = []
+    for ref in ("Tengu", fitted):
+        with bench.Bench(search._baseline_eft(ref), {}) as b:
+            pools.append(search._pool(b.fit, {"module"}, None))
+    bare, full = pools
+    assert bare is not full
+    assert any(c.slot == "high" for c in full.candidates)
+
+
+def test_unknown_reference_is_a_store_error_naming_ships(booted, no_fits_left):
+    with pytest.raises(store.StoreError, match="no stored fit named 'Wyvrn'.*nor is it a ship"):
+        search._baseline_eft("Wyvrn")

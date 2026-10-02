@@ -45,7 +45,7 @@ class Candidate:
 class Pool:
     candidates: list
     excluded: list    # [{"name", "group", "reason"}]
-    duplicates: dict  # kept name -> names measured identically
+    duplicates: dict  # kept name -> twin Candidates, measured once
     scanned: int
     meta_note: str
 
@@ -251,7 +251,7 @@ def _dedupe(found: list[Candidate]) -> tuple[list[Candidate], dict]:
                 first[key] = c
             keep.append(c)
         else:
-            twins.setdefault(first[key].name, []).append(c.name)
+            twins.setdefault(first[key].name, []).append(c)
     return keep, twins
 
 

@@ -46,10 +46,16 @@ def _baseline_eft(fit: str) -> str:
         return fit
     try:
         return store.resolve_eft(fit)
-    except store.StoreError:
+    except store.StoreError as exc:
         ship = _ship_named(fit)
         if ship is None:
-            raise
+            from pyfa_mcp import catalog
+            close = difflib.get_close_matches(
+                fit.strip(), [i.name for i in catalog.published_items(categories=("Ship",))],
+                n=3, cutoff=0.6)
+            raise store.StoreError(
+                f"{exc}; nor is it a ship name"
+                + (f" (did you mean: {', '.join(close)}?)" if close else "")) from None
         return f"[{ship.name}, {ship.name}]\n"
 
 
@@ -70,7 +76,8 @@ def _run(ref: str, raw: dict, keys: list[str], trials: list) -> list:
 
 
 def _pool(fit, sources: set[str], meta: list[str] | None):
-    key = ("pool", fit.ship.item.ID, json.dumps(meta), tuple(sorted(sources)))
+    subs = tuple(sorted(m.item.ID for m in fit.modules if not m.isEmpty and m.slot == 5))
+    key = ("pool", fit.ship.item.ID, subs, json.dumps(meta), tuple(sorted(sources)))
     return _cached(key, lambda: candidates.build(fit, sources, meta))
 
 
@@ -119,7 +126,12 @@ def _add_trials(b, cands) -> tuple[list, list]:
             continue
         places = racks.get(c.slot, [])
         empty = next((w for w in places if b.occupant(w) is None), None)
-        targets = [(empty, None)] if empty is not None else _distinct_occupied(b, places)
+        if c.slot == "subsystem":  # a Core only replaces a Core
+            same = [t for t in _distinct_occupied(b, places)
+                    if b.fit.modules[t[0][1]].item.group.name == c.group]
+            targets = same or [(w, None) for w in places if b.occupant(w) is None]
+        else:
+            targets = [(empty, None)] if empty is not None else _distinct_occupied(b, places)
         for state in (("active", "overheated") if c.overheat else ("active",)):
             for where, replaced in targets:
                 trials.append(([Edit(where, c.type_id, c.charge_id, state)], None))
@@ -127,7 +139,12 @@ def _add_trials(b, cands) -> tuple[list, list]:
     return trials, owners
 
 
-def _row(c, delta, heat, baseline, replaced, problems, duplicates) -> dict:
+def _charge_name(type_id: int) -> str:
+    import eos.db
+    return eos.db.getItem(type_id).name
+
+
+def _row(c, delta, heat, baseline, replaced, problems) -> dict:
     notes = []
     if c.active:
         notes.append("active module: measured active")
@@ -140,10 +157,8 @@ def _row(c, delta, heat, baseline, replaced, problems, duplicates) -> dict:
     if c.source == "command_burst":
         notes.append("measured from an unbonused Ferox; a command ship, mindlink or "
                      "booster skills give more")
-    twins = duplicates.get(c.name)
-    if twins:
-        notes.append("identical to " + ", ".join(twins[:5]) + (" ..." if len(twins) > 5 else ""))
     return {"name": c.name, "type_id": c.type_id, "source": c.source, "slot": c.slot,
+            "charge": None if c.charge_id is None else _charge_name(c.charge_id),
             "group": c.group, "meta": c.meta, "cpu": c.cpu, "pg": c.pg,
             "calibration": c.calibration, "delta": delta,
             "delta_overheated": None if heat is None else
@@ -176,7 +191,7 @@ def _groups(rows: list[dict], first: str) -> list[dict]:
             {"name": ref["name"], "meta": ref["meta"], "delta": ref["delta"]},
             "delta_range": [members[-1]["delta"][first], top["delta"][first]],
             "notes": sorted({n for r in members for n in r["notes"]
-                             if not n.startswith(("identical to", "on this fit"))})[:5]})
+                             if not n.startswith("on this fit")})[:5]})
     out.sort(key=lambda g: (-g["delta_range"][1], g["group"]))
     return out
 
@@ -219,23 +234,28 @@ def find_modifiers(fit: str, stat_keys: list[str], sources: list[str] | None = N
     first = stat_keys[0]
     best: dict[int, tuple] = {}
     heat: dict[int, bench.Trial] = {}
-    failed = []
+    errors: dict[int, str] = {}
     for (index, state, replaced), trial in zip(owners, results):
         if trial.values is None:
-            failed.append({"name": found.candidates[index].name, "error": trial.error})
+            errors.setdefault(index, trial.error)
         elif state == "overheated":
             if index not in heat or trial.values[first] > heat[index].values[first]:
                 heat[index] = trial
         elif index not in best or trial.values[first] > best[index][0].values[first]:
             best[index] = (trial, replaced)
 
+    failed = [{"name": found.candidates[i].name, "group": found.candidates[i].group,
+               "reason": f"Pyfa failed: {err}"}
+              for i, err in errors.items() if i not in best]
     rows = []
     for index, (trial, replaced) in best.items():
         delta = {k: trial.values[k] - baseline[k] for k in stat_keys}
         if all(_zero(delta[k], baseline[k]) for k in stat_keys):
             continue
-        rows.append(_row(found.candidates[index], delta, heat.get(index), baseline,
-                         replaced, trial.problems, found.duplicates))
+        c = found.candidates[index]
+        for member in (c, *found.duplicates.get(c.name, ())):
+            rows.append(_row(member, delta, heat.get(index), baseline, replaced,
+                             trial.problems))
 
     pinned = []
     for key, (cap_name, cap_value) in caps.items():
@@ -252,10 +272,9 @@ def find_modifiers(fit: str, stat_keys: list[str], sources: list[str] | None = N
         "baseline": {k: baseline[k] for k in stat_keys},
         "groups": groups,
         "candidates": _expand(rows, groups, expand),
-        "excluded": _excluded_rows(found.excluded),
+        "excluded": _excluded_rows(found.excluded + failed),
         "pinned": pinned,
         "coverage": {"items_scanned": found.scanned, "measured": len(trials),
-                     "failed": failed,
                      "effects_unresolved": drift.unhandled_for(
                          [c.type_id for c in found.candidates])},
         "next": (f"optimize_fit(fit, objective=\"{first}\") builds the best fit from these; "

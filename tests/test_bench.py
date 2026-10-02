@@ -100,3 +100,12 @@ def test_trial_turns_an_unfittable_item_into_an_error(booted, no_fits_left):
         trial = b.trial([bench.Edit(low, _id("Capital Armor Plates"))], KEYS)
         assert trial.values is None and trial.error and trial.problems
         assert b.measure(KEYS) == before
+
+
+def test_implant_edit_on_a_bare_hull_is_measured(booted, no_fits_left):
+    with bench.Bench("[Wyvern, x]\n", {}) as b:
+        base = b.measure(KEYS)
+        b.apply([bench.Edit(("implant", 7), _id("Zainou 'Gnome' Shield Management SM-706"))])
+        got, text = b.measure(KEYS), b.eft()
+    assert got != base
+    _same(got, _flat(evaluate.evaluate(text, None)))
