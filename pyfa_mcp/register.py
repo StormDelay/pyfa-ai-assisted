@@ -11,8 +11,11 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
+import subprocess
 import sys
+import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -90,8 +93,16 @@ def clients() -> dict[str, Client]:
     }
 
 
+def _toml_table(entry: dict) -> str:
+    # JSON strings and arrays are valid TOML basic strings and arrays.
+    return (f"[mcp_servers.{NAME}]\ncommand = {json.dumps(entry['command'])}\n"
+            f"args = {json.dumps(entry['args'])}\n")
+
+
 def snippet(fmt: str = "json") -> str:
     cmd, args = command()
+    if fmt == "toml":
+        return _toml_table({"command": cmd, "args": args})
     return json.dumps({"mcpServers": {NAME: {"command": cmd, "args": args}}}, indent=2)
 
 
@@ -102,9 +113,10 @@ def _claude_cli() -> str | None:
 
 
 def _by_hand(client: Client, why: str) -> RegisterError:
+    by_hand = (_toml_table(client.entry()) if client.toml
+               else json.dumps({NAME: client.entry()}, indent=2))
     return RegisterError(f"{client.config}: {why}; not touching it. "
-                         f"Add this under \"{client.key}\" by hand:\n"
-                         + json.dumps({NAME: client.entry()}, indent=2))
+                         f"Add this under \"{client.key}\" by hand:\n{by_hand}")
 
 
 def _replace(path: Path, text: str) -> None:
@@ -134,12 +146,50 @@ def _read_json(client: Client) -> tuple[dict, dict]:
     return root, servers
 
 
-def registered(client: Client) -> dict | None:
+_HEADER = re.compile(r"^\s*\[")
+_OUR_TABLE = re.compile(r'^\s*\[\s*mcp_servers\s*\.\s*"?' + NAME + r'"?\s*(\.[^\]]*)?\]')
+
+
+def _read_toml(client: Client) -> tuple[str, dict]:
     try:
-        found = _read_json(client)[1].get(NAME)
-    except (RegisterError, OSError):
-        return None
-    return found if isinstance(found, dict) else None
+        text = client.config.read_text(encoding="utf-8-sig")
+    except FileNotFoundError:
+        return "", {}
+    try:
+        return text, tomllib.loads(text)
+    except tomllib.TOMLDecodeError as exc:
+        raise _by_hand(client, f"not valid TOML ({exc})") from exc
+
+
+def _without_ours(text: str) -> str:
+    """The TOML text minus our [mcp_servers.pyfa] table and its sub-tables."""
+    kept, skipping = [], False
+    for line in text.splitlines(keepends=True):
+        if _HEADER.match(line):
+            skipping = bool(_OUR_TABLE.match(line))
+        if not skipping:
+            kept.append(line)
+    return "".join(kept)
+
+
+def _write_toml(client: Client, text: str, want: dict | None) -> None:
+    """Write `text` only if it parses and holds exactly `want` as our entry."""
+    try:
+        ours = tomllib.loads(text).get("mcp_servers", {}).get(NAME)
+    except tomllib.TOMLDecodeError:
+        ours = "unparseable"
+    if ours != want:  # e.g. `pyfa = {...}` inline under [mcp_servers]
+        raise _by_hand(client, f"{NAME} is defined in a form this cannot edit")
+    _replace(client.config, text)
+
+
+def _claude(cli: str, *args: str) -> None:
+    done = subprocess.run([cli, *args], capture_output=True, text=True,
+                          stdin=subprocess.DEVNULL,
+                          creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    if done.returncode != 0:
+        raise RegisterError(f"claude {' '.join(args[:2])} failed: "
+                            f"{(done.stderr or done.stdout).strip()}")
 
 
 def _check_installed(client: Client) -> None:
@@ -147,12 +197,43 @@ def _check_installed(client: Client) -> None:
         raise RegisterError(f"{client.label} is not installed (no {client.marker})")
 
 
+def registered(client: Client) -> dict | None:
+    try:
+        if client.toml:
+            found = _read_toml(client)[1].get("mcp_servers", {}).get(NAME)
+        else:
+            found = _read_json(client)[1].get(NAME)
+    except (RegisterError, OSError):
+        return None
+    return found if isinstance(found, dict) else None
+
+
 def add(client: Client) -> str:
     _check_installed(client)
+    entry = client.entry()
+    if client.toml:
+        text, data = _read_toml(client)
+        if data.get("mcp_servers", {}).get(NAME) == entry:
+            return f"already registered in {client.config}"
+        kept = _without_ours(text)
+        if kept and not kept.endswith("\n"):
+            kept += "\n"
+        _write_toml(client, kept + ("\n" if kept.strip() else "") + _toml_table(entry), entry)
+        return f"registered in {client.config}; restart {client.label} to use it"
     root, servers = _read_json(client)
-    if servers.get(NAME) == client.entry():
+    if servers.get(NAME) == entry:
         return f"already registered in {client.config}"
-    servers[NAME] = client.entry()
+    cli = _claude_cli() if client.label == "Claude Code" else None
+    if cli:
+        # Running Claude Code sessions rewrite ~/.claude.json; let Claude Code
+        # make the change itself. Backed up all the same.
+        if client.config.exists():
+            shutil.copy2(client.config, client.config.with_name(client.config.name + ".pyfa-mcp.bak"))
+        if NAME in servers:
+            _claude(cli, "mcp", "remove", NAME, "--scope", "user")
+        _claude(cli, "mcp", "add-json", NAME, json.dumps(entry), "--scope", "user")
+        return "registered through the claude CLI; restart Claude Code to use it"
+    servers[NAME] = entry
     _replace(client.config, json.dumps(root, indent=2) + "\n")
     return f"registered in {client.config}; restart {client.label} to use it"
 
@@ -160,9 +241,52 @@ def add(client: Client) -> str:
 def remove(client: Client) -> str:
     if not client.config.exists():
         return "not registered"
+    if client.toml:
+        text, data = _read_toml(client)
+        if NAME not in data.get("mcp_servers", {}):
+            return "not registered"
+        _write_toml(client, _without_ours(text), None)
+        return f"removed from {client.config}"
     root, servers = _read_json(client)
     if NAME not in servers:
         return "not registered"
+    cli = _claude_cli() if client.label == "Claude Code" else None
+    if cli:
+        shutil.copy2(client.config, client.config.with_name(client.config.name + ".pyfa-mcp.bak"))
+        _claude(cli, "mcp", "remove", NAME, "--scope", "user")
+        return "removed through the claude CLI"
     del servers[NAME]
     _replace(client.config, json.dumps(root, indent=2) + "\n")
     return f"removed from {client.config}"
+
+
+def run(register_name: str | None, unregister_name: str | None,
+        print_config: str | None) -> int:
+    """The --register / --unregister / --print-config command line; returns the exit code."""
+    if print_config:
+        print(snippet(print_config))
+        return 0
+    table = clients()
+    wanted = register_name or unregister_name
+    if register_name == "auto":
+        names = [n for n, c in table.items() if c.marker.is_dir()]
+        if not names:
+            print("no MCP client found; paste the output of --print-config into yours")
+            return 0
+    elif unregister_name == "all":
+        names = [n for n, c in table.items() if registered(c)]
+    elif wanted in table:
+        names = [wanted]
+    else:
+        print(f"unknown client '{wanted}'; known: {', '.join(table)}, "
+              f"{'auto' if register_name else 'all'}", file=sys.stderr)
+        return 1
+    action = add if register_name else remove
+    failed = False
+    for name in names:
+        try:
+            print(f"{table[name].label}: {action(table[name])}")
+        except (RegisterError, OSError) as exc:
+            failed = True
+            print(f"{table[name].label}: {exc}", file=sys.stderr)
+    return 1 if failed else 0

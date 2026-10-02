@@ -139,3 +139,158 @@ def test_snippet_json(roots):
     cmd, args = register.command()
     assert json.loads(register.snippet("json")) == \
         {"mcpServers": {"pyfa": {"command": cmd, "args": args}}}
+
+
+import subprocess
+import tomllib
+
+CODEX = """# my codex config
+model = "o4"
+
+[mcp_servers.other]
+command = "other.exe"
+args = ["--x"]
+
+[mcp_servers.other.env]
+KEY = "v"
+
+[profiles.fast]
+model = "o4-mini"
+"""
+
+
+def test_codex_keeps_every_other_line(roots):
+    c = _install("codex")
+    c.config.write_text(CODEX, encoding="utf-8")
+    register.add(c)
+    text = c.config.read_text(encoding="utf-8")
+    assert text.startswith(CODEX)  # everything before stays, in order
+    data = tomllib.loads(text)
+    assert data["mcp_servers"]["pyfa"] == c.entry()
+    assert data["mcp_servers"]["other"]["env"] == {"KEY": "v"}
+    assert data["profiles"]["fast"]["model"] == "o4-mini"
+
+
+def test_codex_reregister_replaces_and_unregister_restores(roots, monkeypatch):
+    c = _install("codex")
+    c.config.write_text(CODEX, encoding="utf-8")
+    register.add(c)
+    monkeypatch.setattr(register, "command", lambda: ("D:\\new\\pyfa-mcp.exe", []))
+    register.add(c)
+    text = c.config.read_text(encoding="utf-8")
+    assert text.count("[mcp_servers.pyfa]") == 1
+    assert tomllib.loads(text)["mcp_servers"]["pyfa"]["command"] == "D:\\new\\pyfa-mcp.exe"
+    assert "removed" in register.remove(c)
+    assert tomllib.loads(c.config.read_text(encoding="utf-8")) == tomllib.loads(CODEX)
+
+
+def test_codex_inline_pyfa_is_refused(roots):
+    c = _install("codex")
+    text = '[mcp_servers]\npyfa = { command = "old.exe" }\n'
+    c.config.write_text(text, encoding="utf-8")
+    with pytest.raises(register.RegisterError):
+        register.add(c)
+    assert c.config.read_text(encoding="utf-8") == text
+
+
+def test_codex_bad_toml_is_left_alone(roots):
+    c = _install("codex")
+    c.config.write_text("model = \n", encoding="utf-8")
+    with pytest.raises(register.RegisterError, match="pyfa"):
+        register.add(c)
+    assert c.config.read_text(encoding="utf-8") == "model = \n"
+
+
+def test_codex_unregister_when_absent_writes_nothing(roots):
+    c = _install("codex")
+    c.config.write_text(CODEX, encoding="utf-8")
+    assert "not registered" in register.remove(c)
+    assert c.config.read_text(encoding="utf-8") == CODEX
+
+
+def test_snippet_toml(roots):
+    cmd, args = register.command()
+    assert tomllib.loads(register.snippet("toml")) == \
+        {"mcp_servers": {"pyfa": {"command": cmd, "args": args}}}
+
+
+@pytest.fixture
+def claude_cli(monkeypatch):
+    calls = []
+
+    def fake_run(argv, **kwargs):
+        calls.append(argv[1:])
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    monkeypatch.setattr(register, "_claude_cli", lambda: "C:\\bin\\claude.exe")
+    monkeypatch.setattr(register.subprocess, "run", fake_run)
+    return calls
+
+
+def test_claude_code_goes_through_its_cli(roots, claude_cli):
+    c = _install("claude-code")
+    c.config.write_text('{"numStartups": 3}', encoding="utf-8")
+    register.add(c)
+    assert claude_cli == [["mcp", "add-json", "pyfa", json.dumps(c.entry()), "--scope", "user"]]
+    assert c.config.read_text(encoding="utf-8") == '{"numStartups": 3}'  # the CLI writes, not us
+
+
+def test_claude_code_cli_replaces_a_stale_entry(roots, claude_cli):
+    c = _install("claude-code")
+    c.config.write_text(json.dumps({"mcpServers": {"pyfa": {"command": "old.exe"}}}), encoding="utf-8")
+    register.add(c)
+    assert claude_cli[0] == ["mcp", "remove", "pyfa", "--scope", "user"]
+    assert claude_cli[1][:3] == ["mcp", "add-json", "pyfa"]
+
+
+def test_claude_code_cli_unregister_only_when_present(roots, claude_cli):
+    c = _install("claude-code")
+    assert "not registered" in register.remove(c)
+    assert claude_cli == []
+
+
+def test_claude_code_cli_failure_is_reported(roots, monkeypatch):
+    monkeypatch.setattr(register, "_claude_cli", lambda: "C:\\bin\\claude.exe")
+    monkeypatch.setattr(register.subprocess, "run", lambda argv, **kw:
+                        subprocess.CompletedProcess(argv, 1, "", "boom"))
+    with pytest.raises(register.RegisterError, match="boom"):
+        register.add(_install("claude-code"))
+
+
+def test_run_auto_registers_detected_clients_only(roots, capsys):
+    cursor, vscode = _install("cursor"), _install("vscode")
+    assert register.run("auto", None, None) == 0
+    assert register.registered(cursor) and register.registered(vscode)
+    assert not register.clients()["codex"].config.exists()
+    out = capsys.readouterr().out
+    assert "Cursor" in out and "VS Code" in out
+
+
+def test_run_auto_with_nothing_installed(roots, capsys):
+    assert register.run("auto", None, None) == 0
+    assert "--print-config" in capsys.readouterr().out
+
+
+def test_run_unregister_all(roots):
+    cursor, vscode = _install("cursor"), _install("vscode")
+    register.run("auto", None, None)
+    assert register.run(None, "all", None) == 0
+    assert not register.registered(cursor) and not register.registered(vscode)
+
+
+def test_run_one_failure_still_does_the_rest(roots, capsys):
+    _install("vscode").config.write_text("{ // comment\n}", encoding="utf-8")
+    cursor = _install("cursor")
+    assert register.run("auto", None, None) == 1
+    assert register.registered(cursor)
+    assert "VS Code" in capsys.readouterr().err
+
+
+def test_run_unknown_client(roots, capsys):
+    assert register.run("emacs", None, None) == 1
+    assert "claude-desktop" in capsys.readouterr().err
+
+
+def test_run_print_config(roots, capsys):
+    assert register.run(None, None, "toml") == 0
+    assert "[mcp_servers.pyfa]" in capsys.readouterr().out

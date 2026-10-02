@@ -52,3 +52,11 @@ def test_pyfa_fits_without_pyfa(booted):
 
 def test_pyfa_fits_over_the_server(pyfa_home):
     assert [f["name"] for f in server.list_fits(source="pyfa")] == ["Home Zealot"]
+
+
+def test_main_print_config_exits_without_serving(capsys):
+    import json
+    with pytest.raises(SystemExit) as exit_info:
+        server.main(["--print-config"])
+    assert exit_info.value.code == 0
+    assert "pyfa" in json.loads(capsys.readouterr().out)["mcpServers"]
