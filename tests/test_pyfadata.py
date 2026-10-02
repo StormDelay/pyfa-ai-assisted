@@ -98,8 +98,8 @@ def test_newer_pyfa_database_is_refused(pyfa_home):
 
 
 def test_pyfa_fit_with_brackets_in_its_name_evaluates(pyfa_home, no_fits_left):
-    _sql(pyfa_home, "UPDATE fits SET name = '[REKTD] Home Zealot'")
-    assert evaluate.evaluate("pyfa:[REKTD] Home Zealot", None)["fit"] == "[REKTD] Home Zealot"
+    _sql(pyfa_home, "UPDATE fits SET name = '[CORP] Home Zealot'")
+    assert evaluate.evaluate("pyfa:[CORP] Home Zealot", None)["fit"] == "[CORP] Home Zealot"
 
 
 def test_what_eft_cannot_carry_is_a_warning(pyfa_home, no_fits_left):

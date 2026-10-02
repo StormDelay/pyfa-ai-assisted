@@ -1475,7 +1475,7 @@ git commit -m "Report Pyfa version drift and effects eos does not compute"
 
 - [ ] **Step 10: HUMAN CHECKPOINT — against the real Pyfa**
 
-With the server registered in Claude Code from this checkout, ask the user to try, in a session: `status()` (expect `pyfa_install.found: true`, `version: v2.69.0`, no warnings); `list_fits(source="pyfa", ship="Ferox")`; `evaluate_fit("pyfa:<an id from that list>")` and compare its EHP/DPS with the same fit in the Pyfa GUI; `conditions_format()` lists their own profiles ("Goons Titans", "womp dreadfight"). `export_to_pyfa` writes their real database: only if they want to, with Pyfa closed, and then check the new fit appears in Pyfa and the `saveddata_pyfa-mcp-backup_*.db` file exists.
+With the server registered in Claude Code from this checkout, ask the user to try, in a session: `status()` (expect `pyfa_install.found: true`, `version: v2.69.0`, no warnings); `list_fits(source="pyfa", ship="<a hull they fly>")`; `evaluate_fit("pyfa:<an id from that list>")` and compare its EHP/DPS with the same fit in the Pyfa GUI; `conditions_format()` lists their own profiles (the two damage profiles in their Pyfa). `export_to_pyfa` writes their real database: only if they want to, with Pyfa closed, and then check the new fit appears in Pyfa and the `saveddata_pyfa-mcp-backup_*.db` file exists.
 
 ---
 

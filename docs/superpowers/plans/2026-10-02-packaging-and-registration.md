@@ -904,7 +904,7 @@ In `pyproject.toml`:
 [dependency-groups]
 dev = ["pytest>=8", "pyinstaller==6.22.3"]
 ```
-Run: `uv sync` (uv lives at `C:\Users\antoi\AppData\Roaming\Python\Python311\Scripts\uv.exe` on the author's machine). Then `.venv/Scripts/python -m PyInstaller --version`.
+Run: `uv sync` (uv lives at `%APPDATA%\Python\Python311\Scripts\uv.exe` on the author's machine). Then `.venv/Scripts/python -m PyInstaller --version`.
 Expected: `6.22.3`.
 
 - [ ] **Step 3: Write `packaging/pyfa-mcp.spec`**
@@ -1154,7 +1154,7 @@ git commit -m "Install pyfa-mcp per user, with one checkbox per MCP client found
 
 Ask the user to run `dist\pyfa-mcp-v0.1.0-setup.exe` by hand:
 1. The client page should list exactly the clients on this PC (here: Claude Desktop, Claude Code, VS Code). They tick the ones they want.
-2. Then restart those clients, and ask one of them "what's the EHP of a Doctrine T2 Ferox in my Pyfa?".
+2. Then restart those clients, and ask one of them "what's the EHP of <one of my fits> in my Pyfa?".
 3. Then check their Claude Desktop `preferences` and other servers survived (`claude_desktop_config.json.pyfa-mcp.bak` is the before-image).
 4. Then uninstall from Windows Settings and see the `pyfa` entries gone.
 
