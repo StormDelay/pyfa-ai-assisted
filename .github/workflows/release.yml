@@ -37,7 +37,7 @@ jobs:
           ref: ${{ inputs.tag || github.ref }}
           submodules: true
           fetch-depth: 1
-      - uses: astral-sh/setup-uv@v10
+      - uses: astral-sh/setup-uv@v10.2.0   # no moving major tag is published
       - run: uv sync
 
       - name: The tag has to name this tree's version and Pyfa

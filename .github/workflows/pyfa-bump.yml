@@ -73,7 +73,7 @@ jobs:
         run: |
           git -C vendor/Pyfa fetch --depth 1 origin "refs/tags/$TARGET:refs/tags/$TARGET"
           git -C vendor/Pyfa checkout --quiet "$TARGET"
-      - uses: astral-sh/setup-uv@v10
+      - uses: astral-sh/setup-uv@v10.2.0   # no moving major tag is published
 
       - name: Gate
         id: gate
