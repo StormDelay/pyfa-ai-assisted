@@ -1,0 +1,17 @@
+{
+  "zealot": {},
+  "zealot_webbed_hot": {"fit": "zealot",
+    "conditions": {"projected": [{"item": "Stasis Webifier II", "count": 2}],
+                   "module_states": [{"module": "Medium Armor Repairer II", "state": "overheated"}]}},
+  "megathron_blaster": {},
+  "megathron_kinetic": {"fit": "megathron_blaster",
+    "conditions": {"damage_profile": {"em": 0, "thermal": 0, "kinetic": 1, "explosive": 0}}},
+  "drekavac_spool_min": {"fit": "drekavac_spool", "conditions": {"spool": "min"}},
+  "drekavac_spool_max": {"fit": "drekavac_spool", "conditions": {"spool": "max"}},
+  "hecate_modes": {"conditions": {"mode": "sharpshooter"}},
+  "thanatos_fighters": {},
+  "rifter_drugs": {"fit": "rifter_drugs",
+    "conditions": {"drug_side_effects": [{"drug": "Strong Blue Pill Booster", "effect": "Cap Capacity"}]}},
+  "vargur_boosted": {"fit": "vargur_boosted",
+    "conditions": {"command": [{"fit": "@damnation_booster"}]}}
+}

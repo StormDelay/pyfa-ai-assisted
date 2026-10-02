@@ -26,8 +26,9 @@ conditions it was computed under.
 
 - The LLM reasons; the server computes. No question-specific tools ("how
   many sebos"); the LLM composes primitive tools.
-- Stateless evaluation over EFT text. Every `fit` argument accepts EFT text
-  or the name/id of a stored fit. Editing a fit = the LLM rewrites EFT and
+- Stateless evaluation over EFT text. Every `fit` argument accepts EFT text,
+  the name/id of a stored fit, or `pyfa:<id or name>` for a fit in the
+  user's Pyfa. Editing a fit = the LLM rewrites EFT and
   re-evaluates. No stateful "add module to fit #3" tools.
 - Nothing silent: every result echoes the conditions it applied (defaults
   included), and unknown names or impossible states are errors with
@@ -107,7 +108,7 @@ Code and game data always come from the same Pyfa commit. Pyfa need not be
 installed; without it, `list_fits(source="pyfa")`, `export_to_pyfa` and the
 user's custom damage/target profiles return "no Pyfa install found".
 
-### Drift checks (run at boot, reported by `status()`)
+### Drift checks (run by `status()`, at most daily for the network part)
 
 1. **Version:** installed Pyfa `version.yml` (if any) and latest
    non-prerelease Pyfa GitHub release (fetched at most daily, skipped quietly
@@ -162,7 +163,8 @@ per-result warnings to the user.
 ### `conditions`
 
 EFT already carries implants, drugs, charges, drones/fighters with counts,
-`/OFFLINE` modules and mutated modules. `conditions` covers the rest:
+`/OFFLINE` modules and mutated modules. `conditions` covers the rest
+(including tactical destroyer modes, which EFT does not carry):
 
 ```json
 {
@@ -170,18 +172,24 @@ EFT already carries implants, drugs, charges, drones/fighters with counts,
   "damage_profile": "uniform" | "<profile name>" | {"em":0,"thermal":0,"kinetic":0,"explosive":0},
   "target": "<target profile name>" | {"resists":{...}, "signature":0, "speed":0, "radius":0},
   "module_states": [{"module":"Large Shield Booster II", "state":"online|active|overheated|offline", "count":1}],
-  "spool": "min" | "max" | "average" | 0.5,
+  "spool": "min" | "max" | 0.5,
   "drug_side_effects": [{"drug":"<booster name>", "effect":"<side effect>"}],
   "command": [{"fit":"<EFT or stored name>"}],
   "projected": [{"item":"Stasis Webifier II", "count":2, "state":"active"},
-                {"fit":"<EFT or stored name>", "count":1}]
+                {"fit":"<EFT or stored name>", "count":1}],
+  "mode": "sharpshooter"
 }
 ```
 
-Defaults: modules active (not overheated), minimum spool, uniform damage,
-no target profile, no side effects, no boosts, nothing projected. Every
-result's `applied` block lists each condition and marks defaults, e.g.
-`"spool": "min (default)"`.
+Defaults: modules active (not overheated), Pyfa's default spool (full, as
+the Pyfa GUI shows), uniform damage, no target profile, no side effects, no
+boosts, nothing projected. Every result's `applied` block lists each
+condition and marks defaults, e.g. `"spool": "1 (default)"`.
+
+Evaluation mechanics: each evaluation imports its fits into the server
+database as temporary fits (marked in `notes`), applies conditions with
+Pyfa's own GUI calc commands, reads stats, and deletes them; boot purges
+any left by a crash.
 
 Errors (never silently ignored): unknown item/profile/fit names (with
 close matches), a module named in `module_states` that is not on the fit or
@@ -233,6 +241,18 @@ GitHub Actions, scheduled hourly:
    Fail → open a PR with the bump and the failure output.
 5. Each run calls the workflow-enable API on itself so GitHub's 60-day
    inactivity rule never disables it (last year had a 65-day Pyfa gap).
+
+Operating it:
+
+- A "gate failed" PR is opened with GITHUB_TOKEN, so it starts no checks of
+  its own; pushing a fix to its branch does. Merging it publishes nothing:
+  push the tag `python scripts/track_pyfa.py tag` prints on the merged commit.
+- One PR per Pyfa tag: while it is open, the hourly check waits for a human.
+- If the Windows build fails after a bump was pushed, the run opens an issue
+  with the recovery steps.
+- Only the default branch publishes; `workflow_dispatch` with `dry_run`
+  exercises the gate from any branch, and `pyfa_tag` forces a target.
+- `uv.lock` is committed; CI syncs with `--locked`, and a bump re-locks.
 
 Background: over 2025-10 → 2026-10, 11 of 14 Pyfa releases added effect
 handlers for player items and none changed the eve.db schema, so tracking
