@@ -48,10 +48,14 @@ class Bench:
 
     def __enter__(self):
         import eos.db
+        from eos.const import ImplantLocation
         self._stack = contextlib.ExitStack()
         try:
             scratch = self._stack.enter_context(evaluate.Scratch())
             self.fit = scratch.add_fit(self._ref)
+            # An EFT without implant lines leaves them on the character, where
+            # edits to fit.implants would not count; the EFT is the whole truth.
+            self.fit.implantLocation = ImplantLocation.FIT
             self.applied = conditions.apply(self.fit, self._cond, scratch.add_fit)
             # No flush while edits are live: a module taken out and put back
             # must never have been deleted from the session in between.

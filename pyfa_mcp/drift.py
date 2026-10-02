@@ -147,6 +147,14 @@ def _unhandled_by_type() -> dict[int, list[str]]:
     return by_type
 
 
+def unhandled_for(type_ids) -> list[str]:
+    """'Item: effect, effect' for each of these items Pyfa does not fully compute."""
+    by_type = _unhandled_by_type()
+    names = {row[0]: row[1] for row in _new_rows()}
+    return [f"{names[t]}: {', '.join(by_type[t])}"
+            for t in dict.fromkeys(type_ids) if t in by_type]
+
+
 def effect_warnings(fit) -> list[str]:
     by_type = _unhandled_by_type()
     if not by_type:
