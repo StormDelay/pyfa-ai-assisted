@@ -1,0 +1,186 @@
+"""Worker processes for searches.
+
+eos is single-threaded with one session per process, so a search fans its
+trials out to processes that each boot their own eos (~1 s, ~150 MB each).
+The pool starts on the first search big enough to need it, stops after
+IDLE_SECONDS without one, and each worker exits by itself if the server
+process dies.
+"""
+from __future__ import annotations
+
+import multiprocessing
+import os
+import shutil
+import sys
+import threading
+import time
+from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures.process import BrokenProcessPool
+from pathlib import Path
+
+from pyfa_mcp import bench, eosboot
+
+INLINE_LIMIT = 300
+IDLE_SECONDS = 60.0
+
+_size = max(1, min((os.cpu_count() or 1) - 2, 12))
+_executor: ProcessPoolExecutor | None = None
+_idle: threading.Timer | None = None
+_busy = 0
+_lock = threading.Lock()
+
+
+class PoolError(RuntimeError):
+    """A worker died mid-search."""
+
+
+def configure(workers: int | None) -> None:
+    global _size
+    if workers is not None:
+        if workers < 0:
+            raise ValueError("--workers must be 0 or more")
+        _size = workers
+    shutdown()
+
+
+def size() -> int:
+    return _size
+
+
+def run(ref: str, raw_conditions: dict | None, keys: list[str], trials: list) -> list:
+    if _size == 0 or len(trials) < INLINE_LIMIT:
+        return bench.run_trials(ref, raw_conditions, keys, trials)
+    executor = _start()
+    try:
+        step = -(-len(trials) // (_size * 2))
+        futures = [executor.submit(bench.run_trials, ref, raw_conditions, keys,
+                                   trials[i:i + step])
+                   for i in range(0, len(trials), step)]
+        return [t for future in futures for t in future.result()]
+    except BrokenProcessPool as exc:
+        shutdown()
+        raise PoolError("a search worker died; the next call starts fresh ones") from exc
+    finally:
+        _release()
+
+
+def _start() -> ProcessPoolExecutor:
+    global _executor, _busy
+    with _lock:
+        _busy += 1
+        if _idle is not None:
+            _idle.cancel()
+        if _executor is None:
+            base = eosboot.booted_dir() / "workers"
+            shutil.rmtree(base, ignore_errors=True)  # left by killed workers
+            _executor = ProcessPoolExecutor(
+                max_workers=_size, mp_context=multiprocessing.get_context("spawn"),
+                initializer=_init_worker, initargs=(os.getpid(), str(base)))
+        return _executor
+
+
+def _release() -> None:
+    global _busy, _idle
+    with _lock:
+        _busy -= 1
+        if _idle is not None:
+            _idle.cancel()
+        _idle = threading.Timer(IDLE_SECONDS, _idle_shutdown)
+        _idle.daemon = True
+        _idle.start()
+
+
+def _idle_shutdown() -> None:
+    with _lock:
+        if _busy:
+            return
+    shutdown()
+
+
+def shutdown() -> None:
+    global _executor, _idle
+    with _lock:
+        if _idle is not None:
+            _idle.cancel()
+            _idle = None
+        executor, _executor = _executor, None
+    if executor is not None:
+        executor.shutdown(wait=False, cancel_futures=True)
+
+
+def _init_worker(parent_pid: int, base: str) -> None:
+    # The server's stdout is the MCP stream; Pyfa prints while it boots.
+    devnull = os.open(os.devnull, os.O_WRONLY)
+    try:
+        os.dup2(devnull, 1)
+    except OSError:
+        pass  # no stdout handle at all (Windows spawn): nothing to protect
+    sys.stdout = open(os.devnull, "w")
+    if sys.stderr is None:
+        sys.stderr = open(os.devnull, "w")
+    threading.Thread(target=_exit_with, args=(parent_pid,), daemon=True).start()
+    eosboot.boot(Path(base) / str(os.getpid()))
+
+
+def _exit_with(parent_pid: int) -> None:
+    if sys.platform == "win32":
+        import ctypes
+        kernel32 = ctypes.windll.kernel32
+        kernel32.OpenProcess.restype = ctypes.c_void_p
+        handle = kernel32.OpenProcess(0x00100000, False, parent_pid)  # SYNCHRONIZE
+        if handle:
+            kernel32.WaitForSingleObject(ctypes.c_void_p(handle), 0xFFFFFFFF)
+    else:
+        while os.getppid() == parent_pid:
+            time.sleep(1)
+    os._exit(0)
+
+
+def _memory_mb(pid: int) -> float:
+    try:
+        if sys.platform == "win32":
+            return _windows_private_mb(pid)
+        with open(f"/proc/{pid}/status", encoding="ascii") as f:
+            for line in f:
+                if line.startswith("VmRSS:"):
+                    return int(line.split()[1]) / 1024
+    except OSError:
+        pass
+    return 0.0
+
+
+def _windows_private_mb(pid: int) -> float:
+    import ctypes
+    from ctypes import wintypes
+
+    class Counters(ctypes.Structure):
+        _fields_ = [("cb", wintypes.DWORD), ("PageFaultCount", wintypes.DWORD),
+                    *((name, ctypes.c_size_t) for name in (
+                        "PeakWorkingSetSize", "WorkingSetSize", "QuotaPeakPagedPoolUsage",
+                        "QuotaPagedPoolUsage", "QuotaPeakNonPagedPoolUsage",
+                        "QuotaNonPagedPoolUsage", "PagefileUsage", "PeakPagefileUsage",
+                        "PrivateUsage"))]
+
+    kernel32 = ctypes.windll.kernel32
+    kernel32.OpenProcess.restype = ctypes.c_void_p
+    handle = kernel32.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
+    if not handle:
+        return 0.0
+    try:
+        counters = Counters()
+        counters.cb = ctypes.sizeof(counters)
+        kernel32.K32GetProcessMemoryInfo.argtypes = [ctypes.c_void_p,
+                                                     ctypes.POINTER(Counters), wintypes.DWORD]
+        if not kernel32.K32GetProcessMemoryInfo(handle, ctypes.byref(counters), counters.cb):
+            return 0.0
+        return counters.PrivateUsage / 2**20
+    finally:
+        kernel32.CloseHandle(ctypes.c_void_p(handle))
+
+
+def describe() -> dict:
+    with _lock:
+        pids = sorted(_executor._processes) if _executor is not None else []
+    return {"workers": _size, "running": len(pids), "pids": pids,
+            "memory_mb": round(sum(_memory_mb(p) for p in pids)),
+            "idle_shutdown_s": IDLE_SECONDS, "inline_below": INLINE_LIMIT}
