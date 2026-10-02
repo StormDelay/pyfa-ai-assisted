@@ -34,6 +34,11 @@ these tools.
 - **Overheat is opt-in** (`allow.module_states`); otherwise active modules
   are measured active.
 - **Drones and fighters are kept as given**, not searched (v1).
+- **Subsystems are measured, not swapped** (v1): `find_modifiers` reports
+  them; `marginal_swaps` and `optimize_fit` keep a T3 cruiser's subsystems,
+  since swapping one changes the slot layout under the search.
+- **`meta`**: omitted means every meta level but Officer and Deadspace;
+  `["all"]` means everything; a list means exactly those levels.
 - **Measured, not static.** Pyfa's game DB has no dogma `modifierInfo`; all
   ~2,400 effects are Python handlers. Membership in a result comes only from
   a measured delta. Attribute names scraped from handler source fill the
@@ -43,6 +48,9 @@ these tools.
 - **Everything outside the hull is listed in one place**
   (`conditions_format().beyond_the_fit`), and environment effects become a
   condition. See "Beyond the fit".
+- **Related fix:** an EFT line naming an item that cannot be fitted (e.g.
+  the component "Capital Armor Plates") is an error today it is silently
+  dropped by Pyfa's importer and not reported.
 - Out of scope: pricing, mutated (abyssal) modules, optimizing a worst case
   over several damage profiles, drone/fighter search, system and pilot
   security status.
@@ -127,8 +135,8 @@ by more than 1e-6 relative, the result carries a warning naming both values.
 | charge | (module, charge) pairs for each module candidate that takes charges | `isValidCharge` |
 | implant | category Implant, implantness 1–10 | — |
 | booster | boosterness slots | — |
-| command_burst | burst charge applied via a temporary booster fit | find_modifiers only |
-| phenomena | phenomena generators, as projected | find_modifiers only |
+| command_burst | burst + charge on an unbonused Ferox booster fit (a floor: command ships and mindlinks give more) | find_modifiers only |
+| phenomena | phenomena generator on its racial titan, as a command fit | find_modifiers only |
 | projected | projected modules from conditions schema | find_modifiers only |
 | environment | system effect beacons, applied as `conditions.environment` | find_modifiers only |
 
@@ -254,15 +262,19 @@ optimize_fit(fit, objective, conditions=None,
   objective or any constraint; collapse identical items; drop dominated
   items (no better on objective, every constraint, and every fitting
   resource). Every prune recorded.
-- **Seed:** greedy fill, best delta first, within CPU/PG/calibration and
-  group limits; plus up to four seeds forcing different slot-type splits
-  (e.g. mids 5/3, 4/4, 6/2).
+- **Seed:** greedy fill, place by place, best measured result first, within
+  CPU/PG/calibration and group limits; a second greedy seed fills the racks
+  in reverse order. A different slot-type split (mids 5/3 vs 4/4) is one
+  single swap away, so the improve step covers it.
 - **Improve:** from each seed, apply the best single swap until none
   improves; then pair swaps among pruned candidates; repeat until neither
   improves. Invalid or constraint-breaking fits never count.
 - **Validate:** top_k distinct fits run through `evaluate_fit`; only those
   numbers are reported.
 - Deterministic: no randomness, ties broken by type id.
+- Heat comes from `allow.module_states`; `conditions.module_states` is
+  refused (it names modules the optimizer may remove). Fits are validated
+  with `module_states` derived from the states the search chose.
 - Budget exhausted → best so far, `converged: false`, `stopped_by`.
 
 ## Agent guidance
@@ -296,8 +308,10 @@ exception text, not fatal.
 
 ## Testing
 
-All with All 5 skills, uniform damage, the pinned game data. Values are
-approximate (tolerate data drift); choices are exact.
+All with All 5 skills, uniform damage, the pinned game data. Choices are
+exact; values are compared with `evaluate_fit` on hand-built reference fits
+rather than the brief's absolute numbers (the brief's Wyvern differed in
+some detail: its numbers are ~6% higher, its ratios identical).
 
 - **Engine equality (first task, gates the rest):** for each reference fit
   and a linked/projected Wyvern, mutate a bench into the target fit and
@@ -317,8 +331,8 @@ approximate (tolerate data drift); choices are exact.
   rigs 3 Field Extender II; ≥ ~308.4M; not 4 PDS without DC (260.3M).
 - **T5** same without overheat: lower value, mid split searched again.
 - **T6** Amarr phenomena on top of Caldari: negative delta, drawback note.
-- **T7** Chimera lock range without ISA, 1 vs 7 Sensor Booster II + range
-  script: both 750 km, `pinned` names maximumRangeCap.
+- **T7** Chimera lock range without ISA, 4 vs 7 Sensor Booster II + range
+  script: both 750 km (1 gives 700 km), `pinned` names maximumRangeCap.
 - **T8** Chimera with Integrated Sensor Array + 1 SeBo II script: ≈ 7,988
   km; ISA in `pinned.raised_by`.
 - **Defaults:** without `meta`, no Officer/Deadspace candidate appears and
