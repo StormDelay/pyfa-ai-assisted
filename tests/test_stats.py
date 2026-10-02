@@ -67,3 +67,49 @@ def test_drone_bay_overflow_is_a_problem(booted, no_fits_left):
         assert any("drone bay" in p for p in s["validity"]["problems"])
     finally:
         Fit.deleteFit(fit.ID)
+
+
+def _fit(scratch, text):
+    from service.fit import Fit
+    fit = scratch.add_fit(text)
+    Fit.getInstance().recalc(fit)
+    return fit
+
+
+def test_read_returns_only_the_keys_asked(booted, zealot_eft, no_fits_left):
+    from pyfa_mcp import evaluate
+    with evaluate.Scratch() as scratch:
+        fit = _fit(scratch, zealot_eft)
+        got = stats.read(fit, ["tank.ehp.total", "ship.shieldCapacity"], 1.0)
+        full = stats.flatten(stats.fit_stats(fit, 1.0))
+    assert set(got) == {"tank.ehp.total", "ship.shieldCapacity"}
+    assert got["tank.ehp.total"] == full["tank.ehp.total"]
+    assert got["ship.shieldCapacity"] > 0
+
+
+def test_read_does_not_run_the_cap_sim_for_tank(booted, zealot_eft, no_fits_left, monkeypatch):
+    from pyfa_mcp import evaluate
+    with evaluate.Scratch() as scratch:
+        fit = _fit(scratch, zealot_eft)
+        monkeypatch.setattr(stats, "_capacitor", lambda fit: pytest.fail("cap sim ran"))
+        stats.read(fit, ["tank.ehp.total"], 1.0)
+
+
+def test_read_rejects_unknown_keys(booted, zealot_eft, no_fits_left):
+    from pyfa_mcp import evaluate
+    with evaluate.Scratch() as scratch:
+        fit = _fit(scratch, zealot_eft)
+        with pytest.raises(ValueError, match="unknown stat 'tank.ehp.totl'"):
+            stats.read(fit, ["tank.ehp.totl"], 1.0)
+        with pytest.raises(ValueError, match="unknown ship attribute 'shieldCapacty'"):
+            stats.read(fit, ["ship.shieldCapacty"], 1.0)
+
+
+def test_cap_names_the_capping_attribute(booted, no_fits_left):
+    from pyfa_mcp import evaluate
+    sebos = "[Chimera, c]\n\n" + "Sensor Booster II, Targeting Range Script\n" * 4
+    with evaluate.Scratch() as scratch:
+        fit = _fit(scratch, sebos)
+        assert stats.cap(fit, "targeting.lock_range_m") == ("maximumRangeCap", 750000.0)
+        assert stats.read(fit, ["targeting.lock_range_m"], 1.0)["targeting.lock_range_m"] == 750000.0
+        assert stats.cap(fit, "tank.ehp.total") is None
