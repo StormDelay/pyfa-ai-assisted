@@ -170,7 +170,7 @@ EFT already carries implants, drugs, charges, drones/fighters with counts,
   "damage_profile": "uniform" | "<profile name>" | {"em":0,"thermal":0,"kinetic":0,"explosive":0},
   "target": "<target profile name>" | {"resists":{...}, "signature":0, "speed":0, "radius":0},
   "module_states": [{"module":"Large Shield Booster II", "state":"online|active|overheated|offline", "count":1}],
-  "spool": "min" | "max" | "average" | 0.5,
+  "spool": "min" | "max" | 0.5,
   "drug_side_effects": [{"drug":"<booster name>", "effect":"<side effect>"}],
   "command": [{"fit":"<EFT or stored name>"}],
   "projected": [{"item":"Stasis Webifier II", "count":2, "state":"active"},
@@ -178,10 +178,15 @@ EFT already carries implants, drugs, charges, drones/fighters with counts,
 }
 ```
 
-Defaults: modules active (not overheated), minimum spool, uniform damage,
-no target profile, no side effects, no boosts, nothing projected. Every
-result's `applied` block lists each condition and marks defaults, e.g.
-`"spool": "min (default)"`.
+Defaults: modules active (not overheated), Pyfa's default spool (full, as
+the Pyfa GUI shows), uniform damage, no target profile, no side effects, no
+boosts, nothing projected. Every result's `applied` block lists each
+condition and marks defaults, e.g. `"spool": "1 (default)"`.
+
+Evaluation mechanics: each evaluation imports its fits into the server
+database as temporary fits (marked in `notes`), applies conditions with
+Pyfa's own GUI calc commands, reads stats, and deletes them; boot purges
+any left by a crash.
 
 Errors (never silently ignored): unknown item/profile/fit names (with
 close matches), a module named in `module_states` that is not on the fit or
