@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from pyfa_mcp import server
+from pyfa_mcp import eosboot, server
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -17,7 +17,7 @@ def _server_uses_test_dir(booted):
 def test_tools_return_data(booted, zealot_eft, no_fits_left):
     result = server.evaluate_fit(zealot_eft)
     assert result["fit"] == "Test Zealot"
-    assert server.status()["pyfa_version"] == "v2.69.0"
+    assert server.status()["pyfa_version"] == eosboot.pyfa_version()
     assert server.status()["pyfa_install"]["found"] is False
     assert "fields" in server.conditions_format()
 

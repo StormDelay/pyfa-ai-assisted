@@ -23,7 +23,8 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      actions: write   # the enable call below
+      actions: write         # the enable call below
+      pull-requests: read    # is a bump PR for this release already open?
     outputs:
       target: ${{ steps.look.outputs.target }}
     steps:
@@ -38,18 +39,23 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           FORCED: ${{ inputs.pyfa_tag }}
+          DRY_RUN: ${{ inputs.dry_run || false }}
         run: |
           latest=${FORCED:-$(gh api repos/pyfa-org/Pyfa/releases/latest -q .tag_name)}
           want=$(gh api "repos/pyfa-org/Pyfa/commits/$latest" -q .sha)
           pinned=$(git ls-tree HEAD vendor/Pyfa | awk '{print $3}')
           echo "pinned $pinned; $latest is $want"
-          if [ -n "$FORCED" ] || [ "$want" != "$pinned" ]; then
-            if [ -z "$FORCED" ] && [ -n "$(gh pr list --head "pyfa-bump/$latest" --state open --json number -q '.[].number')" ]; then
-              echo "a PR for $latest is already open; waiting for a human"
-            else
-              echo "target=$latest" >> "$GITHUB_OUTPUT"
-            fi
+          if [ -z "$FORCED" ] && [ "$want" = "$pinned" ]; then
+            exit 0
           fi
+          # On its own line, so a failed lookup fails the run instead of
+          # reading as "no PR" and redoing the bump every hour.
+          open=$(gh pr list --head "pyfa-bump/$latest" --state open --json number -q '.[].number')
+          if [ -n "$open" ] && [ "$DRY_RUN" != "true" ]; then
+            echo "PR #$open for $latest is open; waiting for a human"
+            exit 0
+          fi
+          echo "target=$latest" >> "$GITHUB_OUTPUT"
 
   bump:
     needs: check
@@ -102,7 +108,9 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git commit -am "Track Pyfa $TARGET"
           git tag "$tag"
-          git push origin "HEAD:${{ github.event.repository.default_branch }}" "$tag"
+          # Both or neither: a master push rejected (someone merged meanwhile)
+          # must not leave the tag behind on a commit master does not have.
+          git push --atomic origin "HEAD:${{ github.event.repository.default_branch }}" "$tag"
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
           { echo "notes<<PYFA_BUMP_NOTES"; echo "Tracks Pyfa $TARGET."; echo
             cat "$RUNNER_TEMP/notes.md"; echo "PYFA_BUMP_NOTES"; } >> "$GITHUB_OUTPUT"
@@ -117,7 +125,8 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git switch -c "$branch"
           git commit -am "Track Pyfa $TARGET (gate failed)"
-          git push --force origin "$branch"
+          # Never --force: a human may already be pushing fixes to this branch.
+          git push origin "$branch"
           fence='```'
           { echo "The automatic move to Pyfa $TARGET failed its gate."; echo
             echo "$fence"; tail -n 150 "$RUNNER_TEMP/gate.log"; echo "$fence"; echo
@@ -139,3 +148,22 @@ jobs:
     with:
       tag: ${{ needs.bump.outputs.tag }}
       notes: ${{ needs.bump.outputs.notes }}
+
+  # The bump is on master and tagged before the Windows build runs, so a
+  # failed build leaves no PR and the next hourly check sees nothing to do.
+  release-failed:
+    needs: [bump, release]
+    if: failure() && needs.bump.outputs.tag != ''
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.bump.outputs.tag }}
+        run: |
+          run_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          gh issue create --repo "$GITHUB_REPOSITORY" --title "Release $TAG failed after its bump was pushed" \
+            --body "master already has the bump and the tag $TAG, but the Windows build, installer check or publish failed: $run_url
+
+          If the failure was transient, re-run the failed jobs of that run. Otherwise fix it on master, delete the tag (git push origin :refs/tags/$TAG) and push a new one from the fixed commit."
