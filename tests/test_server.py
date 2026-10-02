@@ -37,9 +37,18 @@ def test_tool_bodies_keep_stdout_clean(booted, zealot_eft, capsys, no_fits_left)
 
 
 def test_smoke_over_stdio(booted, tmp_path):
+    import json
+    import time
+    from pyfa_mcp import drift
+    data = tmp_path / "data"
+    data.mkdir()
+    fresh = {"tag": None, "checked": time.time()}  # status() then never asks GitHub
+    (data / "release-check.json").write_text(
+        json.dumps({drift.PYFA_REPO: fresh, drift.OWN_REPO: fresh}), encoding="utf-8")
     proc = subprocess.run(
         [sys.executable, str(ROOT / "packaging" / "mcp_smoke.py"),
-         sys.executable, "-m", "pyfa_mcp", "--data-dir", str(tmp_path)],
+         sys.executable, "-m", "pyfa_mcp", "--data-dir", str(data),
+         "--pyfa-dir", str(tmp_path / "no-pyfa")],
         capture_output=True, text=True, timeout=300, cwd=ROOT)
     assert proc.returncode == 0, proc.stdout + proc.stderr
 

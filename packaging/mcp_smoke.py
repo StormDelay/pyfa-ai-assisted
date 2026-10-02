@@ -2,8 +2,10 @@
 
     python packaging/mcp_smoke.py COMMAND [ARGS...]
 
-initialize, tools/list, then evaluate_fit on a small fit. Exits non-zero on
-anything unexpected; a stray print on the server's stdout fails json.loads.
+initialize, tools/list, then evaluate_fit, status, fit_graph and
+conditions_format. Exits non-zero on anything unexpected; a stray print on
+the server's stdout fails json.loads. Pass --data-dir / --pyfa-dir through to
+keep it off the user's own data.
 """
 from __future__ import annotations
 
@@ -16,6 +18,15 @@ TOOLS = {"search_items", "list_ships", "item_info", "evaluate_fit", "compare_fit
          "fit_graph", "graph_options", "conditions_format", "status", "save_fit",
          "list_fits", "get_fit", "delete_fit", "export_to_pyfa"}
 FIT = "[Rifter, smoke]\n200mm AutoCannon II, EMP S\n"
+# One call per subsystem a frozen build could miss an import for: eos (evaluate),
+# drift (status), graphs, conditions.
+CALLS = (
+    ("evaluate_fit", {"fit": FIT}),
+    ("status", {}),
+    ("fit_graph", {"fit": FIT, "graph": "lock_time", "x": "tgtSigRad", "y": "time",
+                   "x_range": [10, 1000]}),
+    ("conditions_format", {}),
+)
 
 
 def main(command: list[str]) -> int:
@@ -44,9 +55,10 @@ def main(command: list[str]) -> int:
         names = {t["name"] for t in call("tools/list", {})["tools"]}
         if names != TOOLS:
             raise SystemExit(f"tools mismatch: missing {TOOLS - names}, extra {names - TOOLS}")
-        result = call("tools/call", {"name": "evaluate_fit", "arguments": {"fit": FIT}})
-        if result.get("isError"):
-            raise SystemExit(f"evaluate_fit: {result['content']}")
+        for name, arguments in CALLS:
+            result = call("tools/call", {"name": name, "arguments": arguments})
+            if result.get("isError"):
+                raise SystemExit(f"{name}: {result['content']}")
         print("ok")
         return 0
     finally:
