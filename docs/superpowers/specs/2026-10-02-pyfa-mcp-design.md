@@ -108,7 +108,7 @@ Code and game data always come from the same Pyfa commit. Pyfa need not be
 installed; without it, `list_fits(source="pyfa")`, `export_to_pyfa` and the
 user's custom damage/target profiles return "no Pyfa install found".
 
-### Drift checks (run at boot, reported by `status()`)
+### Drift checks (run by `status()`, at most daily for the network part)
 
 1. **Version:** installed Pyfa `version.yml` (if any) and latest
    non-prerelease Pyfa GitHub release (fetched at most daily, skipped quietly

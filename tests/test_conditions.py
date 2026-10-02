@@ -315,3 +315,10 @@ def test_more_drones_than_can_launch(temp_fits):
     applied = C.apply(fit, C.parse(None), temp_fits)
     assert fit.drones[0].amountActive == 5
     assert applied["drones"] == ["Hobgoblin II: 5 of 8 launched (default)"]
+
+
+def test_unreadable_user_profiles_do_not_break_conditions(pyfa_home):
+    (pyfa_home / "saveddata.db").write_bytes(b"not a database" * 100)
+    assert "your_profiles_error" in C.describe()
+    with pytest.raises(C.ConditionsError, match="unknown damage profile 'Home EMM'.*could not"):
+        C.damage_pattern(C.parse({"damage_profile": "Home EMM"}))

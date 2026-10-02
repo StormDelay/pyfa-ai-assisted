@@ -17,6 +17,8 @@ import subprocess
 from datetime import datetime
 from pathlib import Path
 
+from sqlalchemy.exc import SQLAlchemyError
+
 _dir: Path | None = None
 _snapshot: dict = {}
 
@@ -91,15 +93,23 @@ def _session():
     key = (str(src), stat.st_mtime_ns, stat.st_size)
     if _snapshot.get("key") != key:
         close()
-        snap = Path(config.savePath) / "pyfa-snapshot.db"
-        _copy(src, snap)
-        engine = create_engine(f"sqlite:///{snap}")
+        # Per process: two servers on one data dir must not copy over each other.
+        snap = Path(config.savePath) / f"pyfa-snapshot-{os.getpid()}.db"
+        engine = None
         try:
+            _copy(src, snap)
+            engine = create_engine(f"sqlite:///{snap}")
             _migrate(engine)
+        except (sqlite3.Error, SQLAlchemyError) as exc:
+            if engine is not None:
+                engine.dispose()
+            raise PyfaDataError(f"the user's Pyfa database {src} could not be read ({exc}); "
+                                "is it a Pyfa saveddata.db?") from exc
         except BaseException:
-            engine.dispose()
+            if engine is not None:
+                engine.dispose()
             raise
-        _snapshot.update(key=key, engine=engine,
+        _snapshot.update(key=key, engine=engine, path=snap,
                          session=Session(bind=engine, autoflush=False, expire_on_commit=False))
     return _snapshot["session"]
 
@@ -108,6 +118,7 @@ def close() -> None:
     if _snapshot:
         _snapshot["session"].close()
         _snapshot["engine"].dispose()
+        _snapshot["path"].unlink(missing_ok=True)
         _snapshot.clear()
 
 
@@ -142,12 +153,16 @@ def target_profiles() -> dict[str, dict]:
 def _pyfa_running() -> bool:
     # ponytail: sees the packaged pyfa.exe only, not Pyfa run from source
     # (python pyfa.py); add a cmdline scan if someone runs it that way.
+    # Bytes: tasklist writes the console code page, which a localised
+    # Windows fills with letters cp1252 cannot decode. No stdin: ours is
+    # the MCP stream.
     if os.name == "nt":
         out = subprocess.run(["tasklist", "/FI", "IMAGENAME eq pyfa.exe", "/NH"],
-                             capture_output=True, text=True,
-                             creationflags=subprocess.CREATE_NO_WINDOW).stdout
-        return "pyfa.exe" in out.lower()
-    return subprocess.run(["pgrep", "-ix", "pyfa"], capture_output=True).returncode == 0
+                             capture_output=True, stdin=subprocess.DEVNULL,
+                             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0)).stdout
+        return b"pyfa.exe" in out.lower()
+    return subprocess.run(["pgrep", "-ix", "pyfa"], capture_output=True,
+                          stdin=subprocess.DEVNULL).returncode == 0
 
 
 def _free_name(session, wanted: str) -> str:
@@ -157,6 +172,11 @@ def _free_name(session, wanted: str) -> str:
     while name.casefold() in taken:
         name, n = f"{wanted} ({n})", n + 1
     return name
+
+
+def _insert(session, fit) -> None:
+    session.add(fit)
+    session.commit()
 
 
 def export_fit(eft_text: str, name: str | None = None) -> dict:
@@ -192,7 +212,9 @@ def export_fit(eft_text: str, name: str | None = None) -> dict:
                                     "start Pyfa once, close it, and export again")
             fit = Port.importAuto(eft_text)[2][0]
             fit.name = _free_name(session, name or fit.name)
-            # What Port.importFitFromBuffer sets on every fit it imports.
+            # Fields Port.importFitFromBuffer sets on an import; here fixed to
+            # All 5, uniform damage, no target and the EFT's own implants,
+            # rather than the user's Pyfa defaults.
             fit.character = all5
             fit.damagePattern = DamagePattern.getDefaultBuiltin()
             fit.implantLocation = ImplantLocation.FIT
@@ -201,8 +223,12 @@ def export_fit(eft_text: str, name: str | None = None) -> dict:
             # Pyfa is not running, so a plain copy is exact (as Pyfa's own
             # migration backups are): restoring is a rename.
             shutil.copy2(db, backup)
-            session.add(fit)
-            session.commit()
+            try:
+                _insert(session, fit)
+            except Exception as exc:
+                session.rollback()
+                backup.unlink(missing_ok=True)  # nothing changed: nothing to restore
+                raise PyfaDataError(f"not exported, nothing was changed: {exc}") from exc
             return {"id": f"pyfa:{fit.ID}", "name": fit.name,
                     "ship": fit.ship.item.name, "backup": str(backup)}
     finally:

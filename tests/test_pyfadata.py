@@ -82,11 +82,13 @@ def test_pyfa_file_is_never_written_by_reads(pyfa_home):
 
 
 def test_older_pyfa_database_is_migrated_on_the_copy(pyfa_home):
-    # Pinned schema is v50; upgrade50 is what adds commandLinks. Revisit on a schema bump.
-    _sql(pyfa_home, "DROP TABLE commandLinks", "PRAGMA user_version = 49")
+    # One schema behind whatever eos is pinned to; Pyfa's upgrades are idempotent.
+    from eos.db import migration
+    older = migration.getAppVersion() - 1
+    _sql(pyfa_home, f"PRAGMA user_version = {older}")
     assert [e["name"] for e in store.list_fits(source="pyfa")] == ["Home Zealot"]
     with contextlib.closing(sqlite3.connect(pyfa_home / "saveddata.db")) as db:
-        assert db.execute("PRAGMA user_version").fetchone()[0] == 49  # the user's file is untouched
+        assert db.execute("PRAGMA user_version").fetchone()[0] == older  # the user's file is untouched
 
 
 def test_newer_pyfa_database_is_refused(pyfa_home):
@@ -116,3 +118,37 @@ def test_what_eft_cannot_carry_is_a_warning(pyfa_home, no_fits_left):
     for lost in ("Home EM", "Home Target", "Helper"):
         assert lost in warnings
     assert "Home EM" in " ".join(store.get_fit("pyfa:Home Zealot")["warnings"])
+
+
+def test_a_corrupt_pyfa_database_is_a_pyfa_data_error(pyfa_home):
+    (pyfa_home / "saveddata.db").write_bytes(b"not a database" * 100)
+    with pytest.raises(pyfadata.PyfaDataError, match="could not be read"):
+        store.list_fits(source="pyfa")
+
+
+def test_each_process_has_its_own_snapshot(pyfa_home, booted):
+    import os
+    store.list_fits(source="pyfa")
+    snap = booted / f"pyfa-snapshot-{os.getpid()}.db"
+    assert snap.exists()
+    pyfadata.close()
+    assert not snap.exists()
+
+
+@pytest.mark.parametrize("out, running", [
+    # German Windows says "ausgeführt", ü being 0x81 in the console's code page.
+    ("INFORMATION: Es werden keine Tasks mit den angegebenen Kriterien ausgef\x81hrt.", False),
+    ("pyfa.exe                      1234 Console                    1    250.000 K", True),
+])
+def test_pyfa_running_reads_tasklist_as_bytes(monkeypatch, out, running):
+    import subprocess
+    seen = {}
+
+    def fake(argv, **kwargs):
+        seen.update(kwargs)
+        return subprocess.CompletedProcess(argv, 0, out.encode("latin-1"), b"")
+
+    monkeypatch.setattr(pyfadata.subprocess, "run", fake)
+    monkeypatch.setattr(pyfadata.os, "name", "nt")
+    assert pyfadata._pyfa_running() is running
+    assert seen["stdin"] == subprocess.DEVNULL and not seen.get("text")

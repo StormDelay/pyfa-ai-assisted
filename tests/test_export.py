@@ -58,7 +58,8 @@ def test_refused_while_pyfa_runs(pyfa_home, zealot_eft, monkeypatch, no_fits_lef
 
 def test_refused_on_another_schema_version(pyfa_home, zealot_eft, no_fits_left):
     with contextlib.closing(sqlite3.connect(pyfa_home / "saveddata.db")) as db:
-        db.execute("PRAGMA user_version = 49")
+        from eos.db import migration
+        db.execute(f"PRAGMA user_version = {migration.getAppVersion() - 1}")
         db.commit()
     _refused(pyfa_home, "EFT", lambda: store.export_to_pyfa(zealot_eft))
 
@@ -76,3 +77,11 @@ def test_refused_for_a_trimmed_fit(pyfa_home, no_fits_left):
 def test_refused_without_pyfa(booted, zealot_eft, no_fits_left):
     with pytest.raises(pyfadata.PyfaDataError, match="no Pyfa install"):
         store.export_to_pyfa(zealot_eft)
+
+
+def test_a_failed_write_leaves_no_backup(pyfa_home, zealot_eft, monkeypatch, no_fits_left):
+    def locked(session, fit):
+        raise RuntimeError("database is locked")
+
+    monkeypatch.setattr(pyfadata, "_insert", locked)
+    _refused(pyfa_home, "database is locked", lambda: store.export_to_pyfa(zealot_eft))
