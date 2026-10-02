@@ -69,6 +69,24 @@ def test_offline_modules_survive(booted, no_fits_left):
         _delete(fit)
 
 
+def test_modules_pyfa_drops_are_recorded(booted, no_fits_left):
+    # Pyfa's importer silently skips modules that do not fit the hull.
+    fit = eft.import_fit("[Zealot, over]\n" + "Heat Sink II\n" * 9)
+    try:
+        assert [m.name for m in fit.dropped_modules] == ["Heat Sink II"] * 2
+        assert fit.dropped_modules[0].reason == "no free low slot"
+    finally:
+        _delete(fit)
+
+
+def test_nothing_dropped_from_a_valid_fit(booted, zealot_eft, no_fits_left):
+    fit = eft.import_fit(zealot_eft)
+    try:
+        assert fit.dropped_modules == []
+    finally:
+        _delete(fit)
+
+
 def test_looks_like_eft():
     assert eft.looks_like_eft("\n  [Zealot, x]\n")
     assert not eft.looks_like_eft("My Zealot")
