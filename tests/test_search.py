@@ -128,3 +128,26 @@ def test_pool_cache_separates_bare_and_fitted_tengu(booted, no_fits_left):
 def test_unknown_reference_is_a_store_error_naming_ships(booted, no_fits_left):
     with pytest.raises(store.StoreError, match="no stored fit named 'Wyvrn'.*nor is it a ship"):
         search._baseline_eft("Wyvrn")
+
+
+def test_t3_the_plate_should_have_been_a_pds(booted, no_fits_left):
+    result = search.marginal_swaps(wyvern.BRIEF, "tank.ehp.total", wyvern.HOT, meta=["all"])
+    top = result["swaps"][0]
+    assert top["remove"] == wyvern.PLATE
+    assert "Power Diagnostic System" in top["add"] and "Modified" in top["add"]
+    one_pds = wyvern.fit([wyvern.DC, wyvern.PDS, wyvern.PLATE, wyvern.PLATE])
+    expected = _ehp(one_pds, wyvern.HOT) - _ehp(wyvern.BRIEF, wyvern.HOT)
+    assert top["delta"] == pytest.approx(expected, rel=1e-6)
+    assert result["no_improvement_found"] is False
+    assert result["warnings"] == []
+
+
+def test_marginal_swaps_minimizes_with_a_minus(booted, zealot_eft, no_fits_left):
+    result = search.marginal_swaps(zealot_eft, "-navigation.align_time_s", top_n=3)
+    assert result["swaps"][0]["delta"] < 0
+
+
+def test_no_improvement_on_an_optimal_fit(booted, no_fits_left):
+    result = search.marginal_swaps("[Rifter, empty]\n", "-navigation.signature_m",
+                                   include_empty_slots=False)
+    assert result["no_improvement_found"] is True

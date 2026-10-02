@@ -9,6 +9,7 @@ from __future__ import annotations
 import difflib
 import json
 from collections import OrderedDict
+from typing import NamedTuple
 
 from pyfa_mcp import bench, candidates, drift, eft, evaluate, pool, stats, store
 from pyfa_mcp.bench import Edit
@@ -281,3 +282,131 @@ def find_modifiers(fit: str, stat_keys: list[str], sources: list[str] | None = N
                  "expand=[group names] lists every variant of a group. Candidates: "
                  f"{found.meta_note}."),
     }
+
+
+# --- marginal_swaps ----------------------------------------------------------
+
+_RACKS = ("high", "mid", "low", "rig")
+_LOCAL = {"module", "rig", "charge", "implant", "booster"}
+
+
+class Option(NamedTuple):
+    """One thing a search can put in one kind of place."""
+    place: str           # "high"/"mid"/"low"/"rig" or "implant 7"/"booster 1"
+    type_id: int
+    charge_id: int | None
+    state: str | None
+    name: str
+    group: str
+    cpu: float = 0.0
+    pg: float = 0.0
+    calibration: float = 0.0
+
+    def edit(self, where) -> Edit:
+        return Edit(where, self.type_id, self.charge_id, self.state)
+
+    def sort_key(self) -> tuple:
+        return (self.place, self.type_id, self.charge_id or 0, self.state or "")
+
+
+def _objective(text: str) -> tuple[str, int]:
+    text = text.strip()
+    return (text[1:], -1) if text.startswith("-") else (text, 1)
+
+
+def _options(cands, heat: bool) -> dict[str, list[Option]]:
+    out: dict[str, list[Option]] = {}
+    for c in cands:
+        if c.extra is not None or c.source not in _LOCAL:
+            continue
+        if c.source in ("implant", "booster"):
+            if len(c.edits) == 1:  # sets are moves of their own
+                place = f"{c.source} {c.edits[0].where[1]}"
+                out.setdefault(place, []).append(
+                    Option(place, c.type_id, None, None, c.name, c.group))
+            continue
+        for state in (("active", "overheated") if heat and c.overheat else ("active",)):
+            name = c.name + (" (overheated)" if state == "overheated" else "")
+            out.setdefault(c.slot, []).append(Option(c.slot, c.type_id, c.charge_id, state,
+                                                     name, c.group, c.cpu, c.pg,
+                                                     c.calibration))
+    return out
+
+
+def _place_key(b, where) -> str:
+    return b.rack(where) if where[0] == "module" else f"{where[0]} {where[1]}"
+
+
+def _pod_places(b, options) -> list[tuple]:
+    places = [(kind, int(p.split()[1])) for p in options for kind in ("implant", "booster")
+              if p.startswith(kind + " ")]
+    places += [("implant", i.slot) for i in b.fit.implants]
+    places += [("booster", x.slot) for x in b.fit.boosters]
+    return list(dict.fromkeys(places))
+
+
+def _swap_places(b, include_empty: bool, options) -> list[tuple]:
+    """(where, occupant): one place per distinct occupant, one empty per rack."""
+    seen, out = set(), []
+    places = [w for w in b.module_places() if b.rack(w) in _RACKS] + _pod_places(b, options)
+    for where in places:
+        occ = b.occupant(where)
+        key = (_place_key(b, where), occ)
+        if key in seen or (occ is None and not include_empty):
+            continue
+        seen.add(key)
+        out.append((where, occ))
+    return out
+
+
+def marginal_swaps(fit: str, objective: str, raw_conditions: dict | None = None,
+                   meta: list[str] | None = None, include_empty_slots: bool = True,
+                   top_n: int = 10) -> dict:
+    key, sign = _objective(objective)
+    ref, raw = _baseline_eft(fit), _portable(raw_conditions)
+    with bench.Bench(ref, raw) as b:
+        base = b.measure([key])[key]
+        found = _pool(b.fit, _LOCAL, meta)
+        options = _options(found.candidates, heat=False)
+        trials, labels = [], []
+        for where, occ in _swap_places(b, include_empty_slots, options):
+            place = _place_key(b, where)
+            removed = None if occ is None else b.name_of(occ[0])
+            if occ is not None:
+                trials.append(([Edit(where, None)], None))
+                labels.append((place, removed, None))
+            for option in options.get(place, []):
+                if occ is not None and (option.type_id, option.charge_id) == occ[:2]:
+                    continue
+                trials.append(([option.edit(where)], None))
+                labels.append((place, removed, option.name))
+        applied = {**b.applied, "meta": found.meta_note}
+    results = _run(ref, raw, [key], trials)
+
+    rows, invalid, failed = [], 0, []
+    for (place, removed, added), (edits, _), trial in zip(labels, trials, results):
+        if trial.values is None:
+            failed.append({"remove": removed, "add": added, "error": trial.error})
+            continue
+        if trial.problems:
+            invalid += 1
+            continue
+        delta = trial.values[key] - base
+        rows.append({"slot": place, "remove": removed, "add": added, "delta": delta,
+                     "new_value": trial.values[key], "valid": True, "_edits": edits})
+    rows.sort(key=lambda r: (-sign * r["delta"], r["add"] or "", r["remove"] or ""))
+    improving = bool(rows) and sign * rows[0]["delta"] > 0 and not _zero(rows[0]["delta"], base)
+    top, warnings = rows[:top_n], []
+    if improving:
+        confirmed = _confirm(ref, raw, top[0]["_edits"])
+        value = confirmed["flat"][key]
+        if not _zero(value - top[0]["new_value"], value):
+            warnings.append(f"the bench measured {top[0]['new_value']:g} but evaluate_fit "
+                            f"gives {value:g}; the evaluator's number is reported")
+        top[0].update(new_value=value, delta=value - base, eft=confirmed["eft"])
+    for r in rows:
+        r.pop("_edits")
+    return {"applied": applied, "objective": objective, "baseline": base, "swaps": top,
+            "no_improvement_found": not improving, "warnings": warnings,
+            "coverage": {"swaps_tried": len(trials), "invalid_dropped": invalid,
+                         "failed": failed, "excluded": _excluded_rows(found.excluded)}}
