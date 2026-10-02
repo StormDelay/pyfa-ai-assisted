@@ -260,3 +260,51 @@ def test_unprojectable_drone_is_an_error(temp_fits, zealot_eft):
     fit = temp_fits(zealot_eft)
     with pytest.raises(C.ConditionsError, match="cannot be projected"):
         C.apply(fit, C.parse({"projected": [{"item": "Hobgoblin II"}]}), temp_fits)
+
+
+def test_user_damage_profile_by_name(temp_fits, zealot_eft, pyfa_home):
+    mine = temp_fits(zealot_eft)
+    applied = C.apply(mine, C.parse({"damage_profile": "home em"}), temp_fits)
+    same = temp_fits(zealot_eft)
+    C.apply(same, C.parse({"damage_profile":
+        {"em": 1, "thermal": 0, "kinetic": 0, "explosive": 0}}), temp_fits)
+    assert mine.ehp["armor"] == pytest.approx(same.ehp["armor"])
+    assert applied["damage_profile"] == "home em"
+
+
+def test_user_target_profile_by_name(temp_fits, zealot_eft, pyfa_home):
+    fit = temp_fits(zealot_eft)
+    C.apply(fit, C.parse({"target": "Home Target"}), temp_fits)
+    assert fit.targetProfile.signatureRadius == 40
+    assert fit.targetProfile.emAmount == 0.5
+
+
+def test_misspelled_profile_suggests_user_profiles(temp_fits, zealot_eft, pyfa_home):
+    fit = temp_fits(zealot_eft)
+    with pytest.raises(C.ConditionsError, match=r"did you mean: .*Home EM\b"):
+        C.apply(fit, C.parse({"damage_profile": "Home EMM"}), temp_fits)
+
+
+def test_builtin_profile_wins_over_a_user_profile_of_the_same_name(pyfa_home):
+    import contextlib
+    import sqlite3
+    from pyfa_mcp.eosboot import TEMP_NOTE
+    name = next(iter(C._builtin_damage_profiles()))
+    with contextlib.closing(sqlite3.connect(pyfa_home / "saveddata.db")) as db:
+        db.execute("INSERT INTO damagePatterns (name, emAmount, thermalAmount, kineticAmount, "
+                   "explosiveAmount) VALUES (?, 1, 0, 0, 0)", (name,))
+        db.commit()
+    pattern = C.damage_pattern(C.parse({"damage_profile": name}))
+    assert pattern.rawName != TEMP_NOTE  # a built-in object, not a copy of the user's row
+
+
+def test_describe_lists_user_profiles(pyfa_home):
+    described = C.describe()
+    assert described["your_damage_profiles"] == ["Home EM"]
+    assert described["your_target_profiles"] == ["Home Target"]
+
+
+def test_describe_without_pyfa(booted):
+    described = C.describe()
+    assert described["your_damage_profiles"] == []
+    assert described["your_target_profiles"] == []

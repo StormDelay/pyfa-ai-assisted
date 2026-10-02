@@ -110,3 +110,26 @@ def close() -> None:
 def fits() -> list:
     from eos.saveddata.fit import Fit
     return [fit for fit in _session().query(Fit).all() if not fit.isInvalid]
+
+
+def damage_profiles() -> dict[str, dict]:
+    """The user's own damage profiles as {em, thermal, kinetic, explosive} weights."""
+    if not installed():
+        return {}
+    from eos.saveddata.damagePattern import DamagePattern
+    return {p.rawName: {"em": p.emAmount, "thermal": p.thermalAmount,
+                        "kinetic": p.kineticAmount, "explosive": p.explosiveAmount}
+            for p in _session().query(DamagePattern).all() if p.rawName}
+
+
+def target_profiles() -> dict[str, dict]:
+    """The user's own target profiles, shaped like a custom `target` condition."""
+    if not installed():
+        return {}
+    from eos.saveddata.targetProfile import TargetProfile
+    # The underscored attributes keep None ("not set"); the properties turn it into 0.
+    return {p.rawName: {"resists": {"em": p.emAmount, "thermal": p.thermalAmount,
+                                    "kinetic": p.kineticAmount, "explosive": p.explosiveAmount},
+                        "speed": p._maxVelocity, "signature": p._signatureRadius,
+                        "radius": p._radius}
+            for p in _session().query(TargetProfile).all() if p.rawName}

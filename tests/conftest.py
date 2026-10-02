@@ -55,7 +55,8 @@ def _no_real_pyfa(tmp_path_factory):
 
 @pytest.fixture
 def pyfa_home(booted, tmp_path, zealot_eft):
-    """A Pyfa data dir whose saveddata.db is a copy of ours holding one fit, 'Home Zealot'."""
+    """A Pyfa data dir whose saveddata.db is a copy of ours holding one fit,
+    'Home Zealot', a damage profile 'Home EM' and a target profile 'Home Target'."""
     import contextlib
     import sqlite3
 
@@ -70,6 +71,12 @@ def pyfa_home(booted, tmp_path, zealot_eft):
         with contextlib.closing(sqlite3.connect(booted / "saveddata.db")) as src, \
                 contextlib.closing(sqlite3.connect(home / "saveddata.db")) as dst:
             src.backup(dst)
+            dst.execute("INSERT INTO damagePatterns (name, emAmount, thermalAmount, "
+                        "kineticAmount, explosiveAmount) VALUES ('Home EM', 1, 0, 0, 0)")
+            dst.execute("INSERT INTO targetResists (name, emAmount, thermalAmount, "
+                        "kineticAmount, explosiveAmount, signatureRadius) "
+                        "VALUES ('Home Target', 0.5, 0.5, 0.5, 0.5, 40)")
+            dst.commit()
     finally:
         store.delete_fit(str(entry["id"]))
     previous = pyfadata.pyfa_dir()

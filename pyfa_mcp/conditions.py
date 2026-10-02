@@ -12,6 +12,7 @@ import difflib
 from dataclasses import dataclass, field
 from typing import Callable
 
+from pyfa_mcp import pyfadata
 from pyfa_mcp.eft import suggest
 from pyfa_mcp.eosboot import TEMP_NOTE
 
@@ -19,10 +20,12 @@ _DAMAGE_KEYS = ("em", "thermal", "kinetic", "explosive")
 _STATES = ("offline", "online", "active", "overheated")
 _FIELDS = {
     "character": "Pilot skills. Only \"All 5\" in this version.",
-    "damage_profile": "Incoming damage for EHP: \"uniform\", a Pyfa built-in "
-                      "profile name, or {em, thermal, kinetic, explosive} weights.",
-    "target": "Target for applied damage: a Pyfa built-in target profile name, or "
-              "{resists: {em, thermal, kinetic, explosive} as 0..1, signature, speed, radius}.",
+    "damage_profile": "Incoming damage for EHP: \"uniform\", a Pyfa built-in profile "
+                      "name, one of the user's own Pyfa profiles (your_damage_profiles), "
+                      "or {em, thermal, kinetic, explosive} weights.",
+    "target": "Target for applied damage: a Pyfa built-in target profile name, one of "
+              "the user's own (your_target_profiles), or {resists: {em, thermal, "
+              "kinetic, explosive} as 0..1, signature, speed, radius}.",
     "module_states": "[{module, state: offline|online|active|overheated, count?}] "
                      "for modules on the fit; count defaults to all of that name.",
     "spool": "Triglavian/mutadaptive spool: \"min\", \"max\" or 0..1. "
@@ -205,11 +208,26 @@ def _builtin_target_profiles() -> dict:
     return {p.fullName: p for p in TargetProfile.getBuiltinList()}
 
 
-def _by_name(profiles: dict, name: str, kind: str):
+def _match(profiles: dict, name: str):
     for full, profile in profiles.items():
         if full.casefold() == name.casefold():
             return profile
-    close = difflib.get_close_matches(name, list(profiles), n=3, cutoff=0.5)
+    return None
+
+
+def _by_name(name: str, kind: str, builtins: dict, mine: Callable[[], dict]):
+    """A built-in profile, else one of the user's own (a dict, as in a condition).
+
+    Built-ins first, so the user's Pyfa is read only when the name needs it.
+    """
+    found = _match(builtins, name)
+    if found is not None:
+        return found
+    own = mine()
+    found = _match(own, name)
+    if found is not None:
+        return found
+    close = difflib.get_close_matches(name, [*builtins, *own], n=3, cutoff=0.5)
     hint = f" (did you mean: {', '.join(close)}?)" if close else ""
     raise ConditionsError(f"unknown {kind} '{name}'{hint}; see conditions_format()")
 
@@ -220,7 +238,10 @@ def damage_pattern(cond: Conditions):
     if value == "uniform":
         return DamagePattern.getDefaultBuiltin()
     if isinstance(value, str):
-        return _by_name(_builtin_damage_profiles(), value, "damage profile")
+        value = _by_name(value, "damage profile", _builtin_damage_profiles(),
+                         pyfadata.damage_profiles)
+        if not isinstance(value, dict):
+            return value
     pattern = DamagePattern(value["em"], value["thermal"], value["kinetic"], value["explosive"])
     # A user pattern: it is saved with the temporary fit and purged with it.
     pattern.rawName = TEMP_NOTE
@@ -233,7 +254,10 @@ def target_profile(cond: Conditions):
     if value is None:
         return None
     if isinstance(value, str):
-        return _by_name(_builtin_target_profiles(), value, "target profile")
+        value = _by_name(value, "target profile", _builtin_target_profiles(),
+                         pyfadata.target_profiles)
+        if not isinstance(value, dict):
+            return value
     resists = value.get("resists", dict.fromkeys(_DAMAGE_KEYS, 0))
     profile = TargetProfile(
         resists["em"], resists["thermal"], resists["kinetic"], resists["explosive"],
@@ -419,6 +443,11 @@ def apply(fit, cond: Conditions, add_fit: Callable) -> dict:
 
 
 def describe() -> dict:
+    try:
+        mine = {"your_damage_profiles": sorted(pyfadata.damage_profiles()),
+                "your_target_profiles": sorted(pyfadata.target_profiles())}
+    except pyfadata.PyfaDataError as exc:
+        mine = {"your_profiles_error": str(exc)}
     return {
         "fields": _FIELDS,
         "defaults": {"character": "All 5", "damage_profile": "uniform",
@@ -426,6 +455,7 @@ def describe() -> dict:
                      "module_states": "as in the EFT (modules active, /OFFLINE honoured)"},
         "damage_profiles": ["uniform", *_builtin_damage_profiles()],
         "target_profiles": list(_builtin_target_profiles()),
+        **mine,
         "examples": _EXAMPLES,
         "in_eft_instead": "implants, drugs (boosters), charges, drones/fighters with "
                           "counts, /OFFLINE modules and mutated modules go in the EFT text",
