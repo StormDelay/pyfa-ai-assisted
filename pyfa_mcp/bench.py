@@ -153,6 +153,7 @@ class Bench:
 
         holders = self._holders(kind)
         old = next((x for x in holders if x.slot == slot), None)
+        at = holders.index(old) if old is not None else None
         if old is not None:
             holders.remove(old)
         new = None
@@ -160,7 +161,7 @@ class Bench:
             new = (Implant if kind == "implant" else Booster)(_item(item_id))
             if new.slot != slot:
                 if old is not None:
-                    holders.append(old)
+                    holders.insert(at, old)
                 raise BenchError(f"{new.item.name} goes in {kind} slot {new.slot}, not {slot}")
             holders.append(new)
 
@@ -168,7 +169,7 @@ class Bench:
             if new is not None and new in holders:
                 holders.remove(new)
             if old is not None:
-                holders.append(old)
+                holders.insert(at, old)
         return back
 
     def _project(self, edit: Edit):
@@ -203,7 +204,7 @@ class Bench:
     def trial(self, edits, keys) -> Trial:
         try:
             undo = self.apply(edits)
-        except BenchError as exc:
+        except ValueError as exc:  # BenchError, or eos refusing an unsuitable item
             return Trial(None, [str(exc)], str(exc))
         try:
             return Trial(self.measure(keys), self.problems())
