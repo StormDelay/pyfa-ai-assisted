@@ -26,8 +26,9 @@ conditions it was computed under.
 
 - The LLM reasons; the server computes. No question-specific tools ("how
   many sebos"); the LLM composes primitive tools.
-- Stateless evaluation over EFT text. Every `fit` argument accepts EFT text
-  or the name/id of a stored fit. Editing a fit = the LLM rewrites EFT and
+- Stateless evaluation over EFT text. Every `fit` argument accepts EFT text,
+  the name/id of a stored fit, or `pyfa:<id or name>` for a fit in the
+  user's Pyfa. Editing a fit = the LLM rewrites EFT and
   re-evaluates. No stateful "add module to fit #3" tools.
 - Nothing silent: every result echoes the conditions it applied (defaults
   included), and unknown names or impossible states are errors with

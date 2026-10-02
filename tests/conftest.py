@@ -44,3 +44,36 @@ def no_fits_left(booted):
     yield
     after = {f.ID for f in Fit.getAllFits()}
     assert after == before, f"fits left behind: {after - before}"
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _no_real_pyfa(tmp_path_factory):
+    """No test may read or write the real ~/.pyfa: point pyfadata at an empty dir."""
+    from pyfa_mcp import pyfadata
+    pyfadata.set_dir(tmp_path_factory.mktemp("no-pyfa"))
+
+
+@pytest.fixture
+def pyfa_home(booted, tmp_path, zealot_eft):
+    """A Pyfa data dir whose saveddata.db is a copy of ours holding one fit, 'Home Zealot'."""
+    import contextlib
+    import sqlite3
+
+    from eos.saveddata.character import Character
+    from pyfa_mcp import pyfadata, store
+
+    Character.getAll5()  # a fresh server DB has no characters; a real Pyfa DB always has
+    entry = store.save_fit(zealot_eft, "Home Zealot")
+    home = tmp_path / "pyfa"
+    home.mkdir()
+    try:
+        with contextlib.closing(sqlite3.connect(booted / "saveddata.db")) as src, \
+                contextlib.closing(sqlite3.connect(home / "saveddata.db")) as dst:
+            src.backup(dst)
+    finally:
+        store.delete_fit(str(entry["id"]))
+    previous = pyfadata.pyfa_dir()
+    pyfadata.set_dir(home)
+    yield home
+    pyfadata.close()
+    pyfadata.set_dir(previous)

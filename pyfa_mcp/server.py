@@ -17,13 +17,15 @@ from pathlib import Path
 from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 
-from pyfa_mcp import catalog, conditions, eft, eosboot, evaluate, graphs, store
+from pyfa_mcp import catalog, conditions, eft, eosboot, evaluate, graphs, pyfadata, store
 
 INSTRUCTIONS = """\
 pyfa-mcp computes EVE Online fits with Pyfa's own engine.
 
-- Fits are EFT text (as Pyfa or the game exports them) or the name/id of a
-  fit saved with save_fit. To change a fit, edit the EFT and evaluate again.
+- Fits are EFT text (as Pyfa or the game exports them), the name/id of a
+  fit saved with save_fit, or "pyfa:<id or name>" for a fit in the user's
+  own Pyfa (list_fits(source="pyfa"); read-only). To change a fit, edit the
+  EFT and evaluate again.
 - evaluate_fit / compare_fits / fit_graph take `conditions`. Defaults: All 5
   skills, uniform incoming damage, no target profile, modules as in the EFT
   (active, /OFFLINE honoured), Pyfa's default spool (full), no drug side
@@ -43,7 +45,7 @@ _boot_error: str | None = None
 _booted = False
 
 _USER_ERRORS = (eft.EftError, conditions.ConditionsError, store.StoreError,
-                catalog.CatalogError, graphs.GraphError, ValueError)
+                catalog.CatalogError, graphs.GraphError, pyfadata.PyfaDataError, ValueError)
 
 
 def _ensure_booted() -> None:
@@ -182,22 +184,23 @@ def save_fit(fit: str, name: str) -> dict:
 
 @app.tool()
 @_tool
-def list_fits(ship: str | None = None) -> list:
-    """Fits stored in the server's database, optionally for one ship."""
-    return store.list_fits(ship)
+def list_fits(ship: str | None = None, source: str = "server") -> list:
+    """Fits stored in the server's database (source="server") or in the user's
+    own Pyfa (source="pyfa", read-only, ids like "pyfa:12"), optionally for one ship."""
+    return store.list_fits(ship, source)
 
 
 @app.tool()
 @_tool
 def get_fit(fit: str) -> dict:
-    """A stored fit (by name or id) as EFT text."""
+    """A stored fit (name or id) or a Pyfa fit ("pyfa:<id or name>") as EFT text."""
     return store.get_fit(fit)
 
 
 @app.tool()
 @_tool
 def delete_fit(fit: str) -> dict:
-    """Delete a stored fit by name or id."""
+    """Delete a fit stored in the server's database, by name or id. Pyfa fits are read-only."""
     return store.delete_fit(fit)
 
 
@@ -206,6 +209,10 @@ def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(prog="pyfa-mcp")
     parser.add_argument("--data-dir", type=Path, default=None,
                         help="where the server keeps its saveddata.db (default ~/.pyfa-mcp)")
+    parser.add_argument("--pyfa-dir", type=Path, default=None,
+                        help="the user's Pyfa data dir (default ~/.pyfa); read, and "
+                             "written only by export_to_pyfa")
     args = parser.parse_args(argv)
     _data_dir = args.data_dir
+    pyfadata.set_dir(args.pyfa_dir)
     app.run()  # stdio

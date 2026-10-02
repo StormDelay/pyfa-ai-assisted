@@ -1,14 +1,18 @@
-"""Fits the user chose to keep, in the server's saveddata.db.
+"""Fits the user chose to keep, in the server's saveddata.db, and fits in
+the user's own Pyfa (read-only).
 
-A fit reference is EFT text, a stored fit's numeric id, or its name
-(case-insensitive). Temporary evaluation fits are never visible here.
+A fit reference is EFT text, a stored fit's numeric id or name
+(case-insensitive), or `pyfa:` followed by a Pyfa fit's id or name.
+Temporary evaluation fits are never visible here.
 """
 from __future__ import annotations
 
 import difflib
 
-from pyfa_mcp import eft
+from pyfa_mcp import eft, pyfadata
 from pyfa_mcp.eosboot import TEMP_NOTE
+
+PYFA_PREFIX = "pyfa:"
 
 
 class StoreError(LookupError):
@@ -27,28 +31,48 @@ def _entry(fit) -> dict:
     return {"id": fit.ID, "name": fit.name, "ship": fit.ship.item.name}
 
 
-def _find(ref: str):
-    fits = _stored()
+def _pyfa_entry(fit) -> dict:
+    return {"id": f"{PYFA_PREFIX}{fit.ID}", "name": fit.name, "ship": fit.ship.item.name}
+
+
+def _pick(fits, ref: str, kind: str, listing: str, id_prefix: str = ""):
     ref = ref.strip()
     if ref.isdigit():
         for fit in fits:
             if fit.ID == int(ref):
                 return fit
-        raise StoreError(f"no stored fit with id {ref}")
+        raise StoreError(f"no {kind} with id {ref}")
     matches = [f for f in fits if f.name.casefold() == ref.casefold()]
     if len(matches) == 1:
         return matches[0]
-    if len(matches) > 1:  # possible only for fits stored before names were unique
-        ids = ", ".join(str(f.ID) for f in matches)
-        raise StoreError(f"several stored fits are named '{ref}'; use an id: {ids}")
+    if len(matches) > 1:  # Pyfa allows it; stored fits only from before names were unique
+        ids = ", ".join(f"{id_prefix}{f.ID}" for f in matches)
+        raise StoreError(f"several {kind}s are named '{ref}'; use an id: {ids}")
     close = difflib.get_close_matches(ref, [f.name for f in fits], n=3, cutoff=0.5)
     hint = f" (did you mean: {', '.join(close)}?)" if close else ""
-    raise StoreError(f"no stored fit named '{ref}'{hint}; pass EFT text or see list_fits()")
+    raise StoreError(f"no {kind} named '{ref}'{hint}; pass EFT text or see {listing}")
+
+
+def _find(ref: str):
+    return _pick(_stored(), ref, "stored fit", "list_fits()")
+
+
+def _pyfa_ref(ref: str) -> str | None:
+    """The part after `pyfa:`, or None for any other reference."""
+    ref = ref.strip()
+    return ref[len(PYFA_PREFIX):] if ref.casefold().startswith(PYFA_PREFIX) else None
+
+
+def _find_pyfa(rest: str):
+    return _pick(pyfadata.fits(), rest, "Pyfa fit", 'list_fits(source="pyfa")', PYFA_PREFIX)
 
 
 def resolve_eft(ref: str) -> str:
     if eft.looks_like_eft(ref):
         return ref
+    rest = _pyfa_ref(ref)
+    if rest is not None:
+        return eft.export_fit(_find_pyfa(rest))
     from service.fit import Fit
     return eft.export_fit(Fit.getInstance().getFit(_find(ref).ID))
 
@@ -68,20 +92,31 @@ def save_fit(ref: str, name: str) -> dict:
     return _entry(fit)
 
 
-def list_fits(ship: str | None = None) -> list[dict]:
-    fits = _stored()
+def list_fits(ship: str | None = None, source: str = "server") -> list[dict]:
+    if source == "server":
+        fits, entry = _stored(), _entry
+    elif source == "pyfa":
+        fits, entry = pyfadata.fits(), _pyfa_entry
+    else:
+        raise StoreError('source must be "server" or "pyfa"')
     if ship:
         fits = [f for f in fits if f.ship.item.name.casefold() == ship.casefold()]
-    return sorted((_entry(f) for f in fits), key=lambda e: e["name"].casefold())
+    return sorted((entry(f) for f in fits), key=lambda e: e["name"].casefold())
 
 
 def get_fit(ref: str) -> dict:
+    rest = _pyfa_ref(ref)
+    if rest is not None:
+        fit = _find_pyfa(rest)
+        return {**_pyfa_entry(fit), "eft": eft.export_fit(fit)}
     from service.fit import Fit
     fit = _find(ref)
     return {**_entry(fit), "eft": eft.export_fit(Fit.getInstance().getFit(fit.ID))}
 
 
 def delete_fit(ref: str) -> dict:
+    if _pyfa_ref(ref) is not None:
+        raise StoreError("fits in the user's Pyfa are read-only here; delete them in Pyfa")
     from service.fit import Fit
     fit = _find(ref)
     entry = _entry(fit)
