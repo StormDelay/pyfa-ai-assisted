@@ -362,6 +362,8 @@ def _swap_places(b, include_empty: bool, options) -> list[tuple]:
 def marginal_swaps(fit: str, objective: str, raw_conditions: dict | None = None,
                    meta: list[str] | None = None, include_empty_slots: bool = True,
                    top_n: int = 10) -> dict:
+    if top_n < 1:
+        raise ValueError("top_n must be at least 1")
     key, sign = _objective(objective)
     ref, raw = _baseline_eft(fit), _portable(raw_conditions)
     with bench.Bench(ref, raw) as b:

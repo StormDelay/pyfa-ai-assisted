@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import difflib
+import functools
 import re
 
 from pyfa_mcp.eft import suggest
@@ -15,6 +16,18 @@ class CatalogError(LookupError):
         return str(self.args[0]) if self.args else ""
 
 
+@functools.cache
+def _group_items(gid: int) -> tuple:
+    """A group's items with their attributes loaded in two queries, not one per charge."""
+    from sqlalchemy.orm import selectinload
+    from eos.db import get_gamedata_session
+    from eos.gamedata import Group, Item
+
+    group = (get_gamedata_session().query(Group).options(
+        selectinload(Group.items).selectinload(Item._Item__attributes)).filter(Group.ID == gid).first())
+    return tuple(group.items) if group else ()
+
+
 def valid_charges(item) -> list:
     """Published charges `item` takes, sorted by ID.
 
@@ -22,16 +35,13 @@ def valid_charges(item) -> list:
     (vendor/Pyfa/eos/db/gamedata/queries.py cachedQuery), so a group id equal to an
     already-fetched item id returns that Item, which has no `.items`.
     """
-    from eos.db import get_gamedata_session
-    from eos.gamedata import Group
     from eos.saveddata.module import Module
 
     mod = Module(item)
     out = {}
     for i in range(5):
         gid = mod.getModifiedItemAttr(f"chargeGroup{i}", None)
-        group = get_gamedata_session().get(Group, int(gid)) if gid else None
-        for c in group.items if group else ():
+        for c in _group_items(int(gid)) if gid else ():
             if c.published and mod.isValidCharge(c):
                 out[c.ID] = c
     return sorted(out.values(), key=lambda c: c.ID)

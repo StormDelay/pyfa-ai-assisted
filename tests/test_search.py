@@ -147,7 +147,36 @@ def test_marginal_swaps_minimizes_with_a_minus(booted, zealot_eft, no_fits_left)
     assert result["swaps"][0]["delta"] < 0
 
 
+# Found by applying marginal_swaps' own top swap to a Rifter with one Small Core Defense
+# Field Extender I (objective tank.ehp.total) until it reported no improvement.
+PUMPED = "[Rifter, g]" + "\n" * 6 + "Small Trimark Armor Pump II\n"
+LOOSE = "[Rifter, g]" + "\n" * 6 + "Small Core Defense Field Extender I\n"
+
+
 def test_no_improvement_on_an_optimal_fit(booted, no_fits_left):
-    result = search.marginal_swaps("[Rifter, empty]\n", "-navigation.signature_m",
-                                   include_empty_slots=False)
+    result = search.marginal_swaps(PUMPED, "tank.ehp.total", include_empty_slots=False)
+    assert result["coverage"]["swaps_tried"] > 0 and result["swaps"]
     assert result["no_improvement_found"] is True
+    assert all(s["delta"] <= 0 for s in result["swaps"])
+    assert "eft" not in result["swaps"][0]
+
+
+def test_a_disagreeing_evaluator_wins_and_is_named(booted, no_fits_left, monkeypatch):
+    real = search._confirm
+
+    def lying(ref, raw, edits):
+        out = real(ref, raw, edits)
+        return {**out, "flat": {**out["flat"], "tank.ehp.total": 12345.0}}
+
+    monkeypatch.setattr(search, "_confirm", lying)
+    result = search.marginal_swaps(LOOSE, "tank.ehp.total", include_empty_slots=False, top_n=1)
+    top = result["swaps"][0]
+    assert top["new_value"] == 12345.0
+    assert top["delta"] == pytest.approx(12345.0 - result["baseline"])
+    assert len(result["warnings"]) == 1 and "12345" in result["warnings"][0]
+    assert "evaluate_fit" in result["warnings"][0]
+
+
+def test_marginal_swaps_rejects_a_top_n_below_one(booted, no_fits_left):
+    with pytest.raises(ValueError, match="top_n must be at least 1"):
+        search.marginal_swaps(LOOSE, "tank.ehp.total", top_n=0)
