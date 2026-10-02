@@ -1,0 +1,84 @@
+; Inno Setup script for the pyfa-mcp installer.
+;
+;     "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" /DAppVersion=0.1.0 packaging\pyfa-mcp.iss
+;
+; after building dist\pyfa-mcp with packaging\pyfa-mcp.spec. The version has
+; no default, so a build can never quietly carry a stale one.
+
+#ifndef AppVersion
+  #error Pass /DAppVersion=x.y.z -- the release decides it, not this file
+#endif
+
+#define AppName "pyfa-mcp"
+#define AppExe "pyfa-mcp.exe"
+
+[Setup]
+AppId={{4C972680-9B4A-4B38-941A-23DEAE8517B6}
+AppName={#AppName}
+AppVersion={#AppVersion}
+AppPublisher=Antoine Jacquin-Ravot
+AppSupportURL=https://github.com/StormDelay/pyfa-ai-assisted
+DefaultDirName={autopf}\{#AppName}
+DisableProgramGroupPage=yes
+; Per user: no UAC prompt, and --register edits this user's client configs.
+PrivilegesRequired=lowest
+ArchitecturesAllowed=x64
+ArchitecturesInstallIn64BitMode=x64
+OutputDir=..\dist
+OutputBaseFilename={#AppName}-v{#AppVersion}-setup
+Compression=lzma2/max
+SolidCompression=yes
+WizardStyle=modern
+LicenseFile=..\LICENSE
+UninstallDisplayIcon={app}\{#AppExe}
+; An upgrade installs over the previous version, so client entries stay valid.
+DisableDirPage=auto
+
+[Languages]
+Name: "english"; MessagesFile: "compiler:Default.isl"
+
+[Tasks]
+; One checkbox per MCP client found on this PC; the same marker dirs as
+; pyfa_mcp/register.py's table. A client not listed: pyfa-mcp.exe --print-config.
+Name: "claude_desktop"; Description: "Claude Desktop"; GroupDescription: "Let these AI apps use pyfa-mcp:"; Check: ClaudeDesktopFound
+Name: "claude_code"; Description: "Claude Code"; GroupDescription: "Let these AI apps use pyfa-mcp:"; Check: Found('{%USERPROFILE}\.claude')
+Name: "cursor"; Description: "Cursor"; GroupDescription: "Let these AI apps use pyfa-mcp:"; Check: Found('{%USERPROFILE}\.cursor')
+Name: "windsurf"; Description: "Windsurf"; GroupDescription: "Let these AI apps use pyfa-mcp:"; Check: Found('{%USERPROFILE}\.codeium\windsurf')
+Name: "devin"; Description: "Devin Desktop"; GroupDescription: "Let these AI apps use pyfa-mcp:"; Check: Found('{userappdata}\devin')
+Name: "vscode"; Description: "VS Code"; GroupDescription: "Let these AI apps use pyfa-mcp:"; Check: Found('{userappdata}\Code\User')
+Name: "codex"; Description: "Codex"; GroupDescription: "Let these AI apps use pyfa-mcp:"; Check: Found('{%USERPROFILE}\.codex')
+
+[Files]
+Source: "..\dist\pyfa-mcp\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+
+[Run]
+Filename: "{app}\{#AppExe}"; Parameters: "--register claude-desktop"; Tasks: claude_desktop; Flags: runhidden waituntilterminated; StatusMsg: "Registering with Claude Desktop..."
+Filename: "{app}\{#AppExe}"; Parameters: "--register claude-code"; Tasks: claude_code; Flags: runhidden waituntilterminated; StatusMsg: "Registering with Claude Code..."
+Filename: "{app}\{#AppExe}"; Parameters: "--register cursor"; Tasks: cursor; Flags: runhidden waituntilterminated; StatusMsg: "Registering with Cursor..."
+Filename: "{app}\{#AppExe}"; Parameters: "--register windsurf"; Tasks: windsurf; Flags: runhidden waituntilterminated; StatusMsg: "Registering with Windsurf..."
+Filename: "{app}\{#AppExe}"; Parameters: "--register devin"; Tasks: devin; Flags: runhidden waituntilterminated; StatusMsg: "Registering with Devin Desktop..."
+Filename: "{app}\{#AppExe}"; Parameters: "--register vscode"; Tasks: vscode; Flags: runhidden waituntilterminated; StatusMsg: "Registering with VS Code..."
+Filename: "{app}\{#AppExe}"; Parameters: "--register codex"; Tasks: codex; Flags: runhidden waituntilterminated; StatusMsg: "Registering with Codex..."
+
+[UninstallRun]
+; Before the files go: removes our entry wherever it is, writes nothing elsewhere.
+Filename: "{app}\{#AppExe}"; Parameters: "--unregister all"; Flags: runhidden waituntilterminated; RunOnceId: "UnregisterClients"
+
+[Code]
+function Found(const Path: String): Boolean;
+begin
+  Result := DirExists(ExpandConstant(Path));
+end;
+
+{ The Microsoft Store build keeps its config under a Packages\Claude_<hash> dir. }
+function ClaudeDesktopFound: Boolean;
+var
+  FindRec: TFindRec;
+begin
+  Result := DirExists(ExpandConstant('{userappdata}\Claude'));
+  if not Result and FindFirst(ExpandConstant('{localappdata}\Packages\Claude_*'), FindRec) then
+  begin
+    Result := True;
+    FindClose(FindRec);
+  end;
+end;
