@@ -577,15 +577,20 @@ class _Search:
             todo.setdefault(self.canonical(state), state)
         batch = [(c, s) for c, s in todo.items() if c not in self.seen]
         over = None
-        if batch and time.monotonic() > self.deadline:
-            over, batch = "seconds", []
-        elif len(batch) > self.left:
+        if len(batch) > self.left:
             over, batch = "evaluations", batch[:self.left]  # spend what is left
-        if batch:
-            trials = self._trials([self.edits(state) for _, state in batch])
-            self.left -= len(batch)
-            self.evaluations += len(batch)
-            for (canon, state), trial in zip(batch, trials):
+        # In pieces, so the seconds budget is checked every second or so of work;
+        # the first batch (the start fit) always runs, so there is a fit to return.
+        step = max(pool.INLINE_LIMIT, 150 * pool.size())
+        for at in range(0, len(batch), step):
+            if self.seen and time.monotonic() > self.deadline:
+                over = "seconds"
+                break
+            piece = batch[at:at + step]
+            trials = self._trials([self.edits(state) for _, state in piece])
+            self.left -= len(piece)
+            self.evaluations += len(piece)
+            for (canon, state), trial in zip(piece, trials):
                 self.seen[canon] = (self._score(trial), state, trial.values)
                 self.problems.update(re.sub(r"\d+(\.\d+)?", "#", p)
                                      for p in trial.problems or [trial.error] if p)
@@ -663,14 +668,17 @@ class _Search:
 
     def improve(self, seeds, sets) -> None:
         """Best single swap (or implant set) until none improves, then the best pair
-        swap; repeat. All seeds step together, so each round is one large batch."""
+        swap; repeat. Seeds step together, so each round is one large batch; pairs
+        (the costly step) wait until no seed has an improving single left."""
         todo = [(state, False) for state in seeds]  # (state, at the pair step)
         while todo:
+            stepping = [t for t in todo if not t[1]] or todo
+            following = {self.canonical(st): (st, paired) for st, paired in todo
+                         if (st, paired) not in stepping}
             moves = [self.pairs(st) if paired else self.singles(st) + self.set_moves(st, sets)
-                     for st, paired in todo]
+                     for st, paired in stepping]
             self.evaluate([m for ms in moves for m in ms])
-            following = {}
-            for (state, paired), ms in zip(todo, moves):
+            for (state, paired), ms in zip(stepping, moves):
                 score, best = self.best(ms)
                 if self.better(score, state):
                     following.setdefault(self.canonical(best), (best, False))
@@ -867,5 +875,17 @@ def optimize_fit(fit: str, objective: str, raw_conditions: dict | None = None,
         "excluded": _excluded_rows(found.excluded),
         "search": {"method": _METHOD, "evaluations": search.evaluations,
                    "seconds": round(time.monotonic() - started, 1),
-                   "converged": converged, "stopped_by": search.stopped_by},
+                   "converged": converged, "stopped_by": search.stopped_by,
+                   **({} if converged else {"note": _stop_note(search.stopped_by)})},
     }
+
+
+def _stop_note(stopped_by: str) -> str:
+    note = (f"stopped by budget.{stopped_by} before the search finished: these are the "
+            "best fits found so far, not necessarily the best there are; a larger "
+            f"budget.{stopped_by} searches further")
+    if stopped_by == "seconds" and pool.size() <= 2:
+        ran = (f"on only {pool.size()} search worker(s)" if pool.size() else
+               "in-process (no search workers)")
+        note += f"; it ran {ran}, and more workers (server option --workers) would too"
+    return note

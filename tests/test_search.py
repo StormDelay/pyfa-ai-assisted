@@ -389,3 +389,43 @@ def test_optimize_fit_leaves_the_find_modifiers_cache_alone(booted, zealot_eft, 
     asked = len(calls)
     assert asked > 1  # the optimizer did use the pool
     assert ask() == first and len(calls) == asked
+
+
+def test_improve_takes_every_improving_single_before_any_pair():
+    s = search._Search.__new__(search._Search)
+    events = []
+
+    def singles(state):
+        events.append(("singles", state))
+        return [state + 1] if state < 3 else [state - 100]
+
+    def pairs(state):
+        events.append(("pairs", state))
+        return [state - 200]
+
+    s.singles, s.pairs, s.set_moves = singles, pairs, lambda state, sets: []
+    s.evaluate = lambda states: [(st, st, None) for st in states]
+    s.best = lambda moves: max((m, m) for m in moves)
+    s.better = lambda score, state: score > state
+    s.canonical = lambda state: state
+    s.improve([3, 0], [])
+    first_pair = events.index(next(e for e in events if e[0] == "pairs"))
+    assert ("singles", 2) in events[:first_pair]
+
+
+def test_optimize_measures_in_pieces_and_says_why_it_stopped(booted, zealot_eft, no_fits_left,
+                                                             monkeypatch):
+    monkeypatch.setattr(pool, "_size", 0)
+    sizes = []
+    real = search._Search._trials
+
+    def recording(self, edits):
+        sizes.append(len(edits))
+        return real(self, edits)
+
+    monkeypatch.setattr(search._Search, "_trials", recording)
+    result = search.optimize_fit(zealot_eft, "tank.ehp.total", top_k=1, budget={"seconds": 2})
+    assert max(sizes) <= pool.INLINE_LIMIT
+    assert result["search"]["stopped_by"] == "seconds"
+    assert "budget.seconds" in result["search"]["note"]
+    assert "in-process" in result["search"]["note"]
