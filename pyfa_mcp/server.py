@@ -206,8 +206,11 @@ def optimize_fit(fit: str, objective: str, conditions: dict | None = None,
     value}]. budget: {evaluations, seconds} (default 20000, 60). Officer and
     Deadspace items are left out unless meta includes them (meta=["all"]).
     Command bursts, phenomena, projected and environment stay as conditions set
-    them. Every returned fit is computed by evaluate_fit; `search.converged`
-    says whether the search finished inside the budget."""
+    them. Every returned fit is computed by evaluate_fit; its `conditions`
+    reproduce it there (module states included: EFT has no heat), and with heat
+    allowed `objective_cold` is the same fit unheated. best[0]["polish"] lists
+    the single swaps a last pass made. `search.converged` says whether the search
+    finished inside the budget."""
     return search.optimize_fit(fit, objective, conditions, allow, meta, locked,
                                constraints, top_k, budget)
 

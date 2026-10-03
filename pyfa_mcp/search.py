@@ -120,15 +120,24 @@ def _excluded_rows(excluded: list[dict]) -> list[dict]:
             for (g, r), n in sorted(by.items())]
 
 
+def _flat(result: dict) -> dict:
+    return stats.flatten({k: v for k, v in result.items()
+                          if k not in ("fit", "ship", "applied", "warnings")})
+
+
+def _value(text: str, raw: dict, key: str) -> float:
+    return _flat(evaluate.evaluate(text, raw))[key]
+
+
 def _confirm(ref: str, raw: dict, edits) -> dict:
-    """The evaluator's numbers for the bench fit after `edits`."""
+    """The evaluator's numbers for the bench fit after `edits`, and the conditions
+    that reproduce them (EFT has no heat, so module states travel there)."""
     with bench.Bench(ref, raw) as b:
         b.apply(edits)
         text, states = b.eft(), b.module_states()
-    result = evaluate.evaluate(text, {**raw, "module_states": states})
-    flat = stats.flatten({k: v for k, v in result.items()
-                          if k not in ("fit", "ship", "applied", "warnings")})
-    return {"eft": text, "flat": flat, "result": result}
+    cond = {**raw, "module_states": states} if states else dict(raw)
+    result = evaluate.evaluate(text, cond)
+    return {"eft": text, "flat": _flat(result), "result": result, "conditions": cond}
 
 
 # --- find_modifiers ----------------------------------------------------------
@@ -908,10 +917,14 @@ def optimize_fit(fit: str, objective: str, raw_conditions: dict | None = None,
         flat = confirmed["flat"]
         shown = list(dict.fromkeys([key, *(s for s, _, _ in cons), *stats.DEFAULT_COMPARE]))
         holds = all(_holds(flat[s], op, x) for s, op, x in cons)
-        best.append({"eft": confirmed["eft"], "objective_value": flat[key],
-                     "stats": {k: flat[k] for k in shown if k in flat},
-                     "valid": bool(flat["validity.valid"]) and holds,
-                     "warnings": confirmed["result"]["warnings"]})
+        entry = {"eft": confirmed["eft"], "objective_value": flat[key]}
+        if "overheated" in allow["module_states"]:
+            entry["objective_cold"] = _value(confirmed["eft"], raw, key)
+        entry.update(stats={k: flat[k] for k in shown if k in flat},
+                     valid=bool(flat["validity.valid"]) and holds,
+                     warnings=confirmed["result"]["warnings"],
+                     conditions=confirmed["conditions"])
+        best.append(entry)
     if best:
         best[0]["polish"] = polish
     out = {"applied": applied, "best": best}

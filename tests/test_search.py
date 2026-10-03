@@ -453,3 +453,15 @@ def test_t1_a_resist_booster_is_not_pruned_on_an_empty_hull(booted, no_fits_left
     assert "Halcyon B-5 Booster" in best["eft"].splitlines()
     assert "Halcyon G-5 Booster" not in best["eft"].splitlines()
     assert best["polish"]["converged"] is True
+
+
+def test_t3_a_result_reproduces_with_its_conditions(booted, zealot_eft, no_fits_left):
+    result = search.optimize_fit(zealot_eft, "tank.ehp.total",
+                                 allow={"slots": ["low"],
+                                        "module_states": ["active", "overheated"]},
+                                 top_k=1, budget={"seconds": 300})
+    best = result["best"][0]
+    assert any(s["state"] == "overheated" for s in best["conditions"]["module_states"])
+    assert _ehp(best["eft"], best["conditions"]) == pytest.approx(best["objective_value"],
+                                                                 rel=1e-12)
+    assert best["objective_cold"] < best["objective_value"]
