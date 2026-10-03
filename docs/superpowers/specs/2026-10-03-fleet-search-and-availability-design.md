@@ -78,9 +78,11 @@ get a second screen). An option is pruned as dominated only if it is
 dominated on both screens. Pruning reasons are unchanged.
 
 **Polish pass.** After `improve()` (or when the main search runs out of
-budget), the search takes the best state and runs single swaps over the
-*full, unpruned* option set (everything `_options` produced, before
-`useful`/`dominated`), best improvement first, until none improves. No pairs.
+budget), the search takes the best state and runs single swaps over every
+option that had an effect on either screen, the dominated ones included,
+best improvement first, until none improves. No pairs. (Options with no
+effect on either screen stay out: on a Wyvern they would multiply the
+pass's cost several times for nothing.)
 The main search gets 85% of each budget (evaluations, seconds); the polish
 gets the rest, plus whatever the main search left. Each best fit reports:
 
@@ -108,9 +110,9 @@ New `verbose: bool = False` on `optimize_fit`, `find_modifiers` and
 
 - `optimize_fit.considered` → `{place: count}`.
 - `optimize_fit.pruned` → `{"counts": {"no effect": n, "dominated": n},
-  "near_winners": [{"name", "reason"}]}`, where `near_winners` lists pruned
-  options in the same item group as an item in `best[0]` (the ones that
-  explain a choice).
+  "near_winners": [{"name", "reason"}]}`, where `near_winners` lists up to
+  20 options pruned as dominated in the same item group as an item in
+  `best[0]` (the ones that explain a choice).
 - `excluded` (all three tools) → `{reason: count}`.
 - `optimize_fit.best[1:]` → `{"objective_value", "valid", "diff": {"remove":
   [...], "add": [...]}}` against `best[0]`'s EFT lines; `best[0]` stays
@@ -234,9 +236,10 @@ and tell the user which `availability` was used.
 
 ## Tests
 
-- **T1** (A) On the brief's fitted Wyvern with the brief's pod and booster
-  slot 5 open, `optimize_fit` with boosters allowed picks Halcyon B-5, not
-  G-5.
+- **T1** (A) On the brief's Wyvern (`wyvern.BEST_LOWS`) with its pod locked,
+  low/mid/rig racks and boosters searched, `meta=["all"]`, no conditions:
+  `optimize_fit` picks Halcyon B-5, not G-5. (Today it returns G-5 at
+  166.29M; B-5 gives 166.60M; B-5 is pruned "dominated by Halcyon G-4".)
 - **T2** (A) Polish: given a state where a pruned option improves, the pass
   applies it and reports it in `polish.swaps_applied`.
 - **T3** (A) For each best fit, `evaluate_fit(eft, conditions)` gives
