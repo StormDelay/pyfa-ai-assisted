@@ -198,9 +198,8 @@ def _row(c, delta, heat, baseline, replaced, problems, signs) -> dict:
               if signs[k] * d < 0 and not _zero(d, baseline[k])]
     if problems:
         notes.append("on this fit: " + "; ".join(problems[:2]))
-    if c.source == "command_burst":
-        notes.append("measured from an unbonused Ferox; a command ship, mindlink or "
-                     "booster skills give more")
+    if c.note:
+        notes.append(c.note)
     return {"name": c.name, "type_id": c.type_id, "source": c.source, "slot": c.slot,
             "charge": None if c.charge_id is None else _charge_name(c.charge_id),
             "group": c.group, "meta": c.meta, "cpu": c.cpu, "pg": c.pg,

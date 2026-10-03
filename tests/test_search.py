@@ -516,3 +516,16 @@ def test_availability_names_its_values(booted, zealot_eft):
     for wrong in ("TQ", "theoretical"):
         with pytest.raises(ValueError, match='availability: use "tq" .* or "all"'):
             search.find_modifiers(zealot_eft, ["tank.ehp.total"], availability=wrong)
+
+
+def test_t8_bursts_are_measured_from_the_strongest_source(booted, no_fits_left):
+    result = search.find_modifiers("Wyvern", ["tank.ehp.total"], sources=["command_burst"],
+                                   expand=["*"])
+    row = next(c for c in result["candidates"]
+               if c["name"] == "Shield Command Burst II + Shield Harmonizing Charge")
+    assert any(n.startswith(("measured from Simurgh", "measured from Ymir"))
+               for n in row["notes"])
+    vulture = "[Vulture, b]\n\n\nShield Command Burst II, Shield Harmonizing Charge\n"
+    by_vulture = (_ehp("[Wyvern, x]\n", {"command": [{"fit": vulture}]})
+                  - _ehp("[Wyvern, x]\n", None))
+    assert row["delta"]["tank.ehp.total"] > by_vulture

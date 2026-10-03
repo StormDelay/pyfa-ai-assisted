@@ -46,7 +46,8 @@ def test_pod_sets_and_external_sources(booted, no_fits_left):
     assert nirvana.group == "Implant sets" and len(nirvana.edits) == 6
     assert by_name["Zainou 'Gnome' Shield Management SM-706"].slot == "implant 7"
     burst = by_name["Shield Command Burst II + Shield Extension Charge"]
-    assert burst.extra["command"][0]["fit"].startswith("[Ferox,")
+    assert burst.extra["command"][0]["fit"].startswith(("[Simurgh,", "[Ymir,"))
+    assert burst.note.startswith("measured from")
     assert "Leviathan" in by_name["Caldari Phenomena Generator"].extra["command"][0]["fit"]
     assert by_name["Class 6 Pulsar Effects"].edits[0].state == "online"
     assert by_name["Stasis Webifier II"].source == "projected"

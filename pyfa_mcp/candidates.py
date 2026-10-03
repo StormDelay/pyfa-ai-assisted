@@ -13,8 +13,6 @@ SOURCES = ("module", "rig", "subsystem", "charge", "implant", "booster",
            "command_burst", "phenomena", "projected", "environment")
 DEFAULT_HIDDEN_META = ("Officer", "Deadspace")
 _GRADES = ("Low-grade", "Mid-grade", "High-grade")
-# Unbonused for every burst, so its deltas are a floor: command ships give more.
-_BURST_HULL = "Ferox"
 _TITANS = {"Amarr": "Avatar", "Caldari": "Leviathan", "Gallente": "Erebus",
            "Minmatar": "Ragnarok"}
 _IGNORED_ATTRS = frozenset({"metaLevelOld", "metaGroupID", "techLevel", "metaLevel"})
@@ -219,16 +217,24 @@ def _sets(implants: list[Candidate]) -> list[Candidate]:
 
 
 def _bursts(ok) -> list[Candidate]:
+    from pyfa_mcp import fleet
+
     out = []
     for item in catalog.published_items(groups=("Command Burst",)):
-        if not ok(item):
+        found = fleet.sources(item.name, ok) if ok(item) else []
+        if not found:
             continue
+        best = found[0]
+        note = (f"measured from {best['hull']}"
+                + (f" + {best['mindlink']}" if best["mindlink"] else "")
+                + ", All V: the strongest source in the game data")
         for charge in catalog.valid_charges(item):
-            booster = f"[{_BURST_HULL}, {item.name}]\n\n\n{item.name}, {charge.name}\n"
+            booster = fleet.booster_eft(best["hull"], [(item.name, charge.name)],
+                                        best["mindlink"])
             out.append(Candidate(
                 name=f"{item.name} + {charge.name}", source="command_burst", slot="external",
                 group=charge.name, meta=catalog._meta(item), type_id=item.ID,
-                charge_id=charge.ID, extra={"command": [{"fit": booster}]}))
+                charge_id=charge.ID, extra={"command": [{"fit": booster}]}, note=note))
     return out
 
 
