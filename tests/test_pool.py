@@ -164,3 +164,17 @@ def test_small_jobs_use_a_running_pool(small_pool, monkeypatch, zealot_eft, no_f
     monkeypatch.setattr(bench, "run_trials", lambda *a: sent.append(a) or [])
     assert len(pool.run(zealot_eft, None, KEYS, _empty(1, 2))) == 2
     assert not sent  # went to the workers, not in-process
+
+
+def test_a_dead_worker_names_the_in_process_fallback(booted, monkeypatch, zealot_eft):
+    from concurrent.futures.process import BrokenProcessPool
+
+    class Broken:
+        def submit(self, *args):
+            raise BrokenProcessPool("gone")
+
+    monkeypatch.setattr(pool, "_start", lambda new: Broken())
+    monkeypatch.setattr(pool, "_release", lambda: None)
+    monkeypatch.setattr(pool, "_size", 2)
+    with pytest.raises(pool.PoolError, match="--workers 0"):
+        pool.run(zealot_eft, None, KEYS, _empty(0))

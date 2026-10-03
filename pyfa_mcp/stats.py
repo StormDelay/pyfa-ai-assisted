@@ -1,6 +1,8 @@
 """A calculated eos fit as plain data, under one spool setting."""
 from __future__ import annotations
 
+import difflib
+
 _LAYERS = {"shield": "shield", "armor": "armor", "hull": ""}
 _TYPES = ("em", "thermal", "kinetic", "explosive")
 
@@ -176,6 +178,10 @@ _SECTIONS = {
     "targeting": lambda fit, spool: _targeting(fit),
     "drones": lambda fit, spool: _drones(fit),
 }
+# Stats that are not always a number, and what a search can use instead.
+NOT_NUMERIC = {"capacitor.stable_at_percent": "capacitor.delta_per_s",
+               "capacitor.lasts_s": "capacitor.delta_per_s",
+               "validity.problems": "validity.valid"}
 # Stats that are one ship attribute, so a dogma cap on it caps the stat.
 _STAT_ATTRS = {"targeting.lock_range_m": "maxTargetRange",
                "targeting.scan_resolution_mm": "scanResolution",
@@ -220,7 +226,10 @@ def read(fit, keys: list[str], spool: float) -> dict:
         elif key in flat:
             out[key] = flat[key]
         else:
-            raise ValueError(f"unknown stat '{key}'; stat keys look like "
+            known = flatten(fit_stats(fit, spool))  # only on this error path: runs the cap sim
+            close = difflib.get_close_matches(key, list(known), n=3, cutoff=0.6)
+            hint = f" (did you mean: {', '.join(close)}?)" if close else ""
+            raise ValueError(f"unknown stat '{key}'{hint}; stat keys look like "
                              f"{', '.join(DEFAULT_COMPARE[:3])}, or ship.<attribute>")
     return out
 

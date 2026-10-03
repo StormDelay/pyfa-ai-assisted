@@ -99,8 +99,11 @@ def test_read_rejects_unknown_keys(booted, zealot_eft, no_fits_left):
     from pyfa_mcp import evaluate
     with evaluate.Scratch() as scratch:
         fit = _fit(scratch, zealot_eft)
-        with pytest.raises(ValueError, match="unknown stat 'tank.ehp.totl'"):
+        with pytest.raises(ValueError, match=r"unknown stat 'tank.ehp.totl' \(did you mean: "
+                                             r"tank.ehp.total"):
             stats.read(fit, ["tank.ehp.totl"], 1.0)
+        with pytest.raises(ValueError, match=r"did you mean: navigation.align_time_s"):
+            stats.read(fit, ["navigation.align_time"], 1.0)
         with pytest.raises(ValueError, match="unknown ship attribute 'shieldCapacty'"):
             stats.read(fit, ["ship.shieldCapacty"], 1.0)
 

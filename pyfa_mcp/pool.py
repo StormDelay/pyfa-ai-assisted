@@ -61,7 +61,8 @@ def run(ref: str, raw_conditions: dict | None, keys: list[str], trials: list) ->
         return [t for future in futures for t in future.result()]
     except BrokenProcessPool as exc:
         shutdown()
-        raise PoolError("a search worker died; the next call starts fresh ones") from exc
+        raise PoolError("a search worker died; the next call starts fresh ones (start the "
+                        "server with --workers 0 to search in-process)") from exc
     finally:
         _release()
 
