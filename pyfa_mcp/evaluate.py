@@ -1,6 +1,8 @@
 """Evaluate fits under conditions, on temporary copies that never outlive a call."""
 from __future__ import annotations
 
+import json
+
 from pyfa_mcp import conditions, drift, eft, eosboot, stats, store
 
 
@@ -61,26 +63,36 @@ def _label(ref: str) -> str:
 
 
 def compare(refs: list[str], raw_conditions: dict | None,
-            keys: list[str] | None) -> dict:
-    cond = conditions.parse(raw_conditions)  # bad conditions fail the whole call
+            keys: list[str] | None, variants: list[dict] | None = None) -> dict:
+    if variants is not None and (not variants
+                                 or not all(isinstance(v, dict) for v in variants)):
+        raise ValueError("variants: a non-empty list of partial conditions objects, each "
+                         "merged over conditions")
     keys = list(keys) if keys else list(stats.DEFAULT_COMPARE)
     applied, rows = None, []
-    for ref in refs:
-        try:
-            result = _evaluate_parsed(ref, cond)
-        except (eft.EftError, store.StoreError, conditions.ConditionsError) as exc:
-            rows.append({"fit": _label(ref), "error": str(exc)})
-            continue
-        except Exception as exc:  # one fit Pyfa chokes on must not sink the table
-            rows.append({"fit": _label(ref), "error": f"{type(exc).__name__}: {exc}"})
-            continue
-        applied = applied or result["applied"]
-        flat = stats.flatten({k: v for k, v in result.items()
-                              if k not in ("fit", "ship", "applied", "warnings")})
-        unknown = [k for k in keys if k not in flat]
-        if unknown:
-            raise ValueError(f"unknown stat '{unknown[0]}'; stat keys look like "
-                             f"{', '.join(stats.DEFAULT_COMPARE[:3])}")
-        rows.append({"fit": result["fit"], "ship": result["ship"],
-                     **{k: flat[k] for k in keys}, "warnings": result["warnings"]})
-    return {"applied": applied, "columns": ["fit", *keys], "rows": rows}
+    for index, variant in enumerate(variants or [None]):
+        # bad conditions fail the whole call
+        cond = conditions.parse({**(raw_conditions or {}), **(variant or {})})
+        label = {} if variant is None else {
+            "variant": index, "variant_label": json.dumps(variant, sort_keys=True)[:80]}
+        for ref in refs:
+            try:
+                result = _evaluate_parsed(ref, cond)
+            except (eft.EftError, store.StoreError, conditions.ConditionsError) as exc:
+                rows.append({"fit": _label(ref), **label, "error": str(exc)})
+                continue
+            except Exception as exc:  # one fit Pyfa chokes on must not sink the table
+                rows.append({"fit": _label(ref), **label,
+                             "error": f"{type(exc).__name__}: {exc}"})
+                continue
+            applied = applied or result["applied"]
+            flat = stats.flatten({k: v for k, v in result.items()
+                                  if k not in ("fit", "ship", "applied", "warnings")})
+            unknown = [k for k in keys if k not in flat]
+            if unknown:
+                raise ValueError(f"unknown stat '{unknown[0]}'; stat keys look like "
+                                 f"{', '.join(stats.DEFAULT_COMPARE[:3])}")
+            rows.append({"fit": result["fit"], "ship": result["ship"], **label,
+                         **{k: flat[k] for k in keys}, "warnings": result["warnings"]})
+    columns = ["fit", *(["variant"] if variants else []), *keys]
+    return {"applied": applied, "columns": columns, "rows": rows}

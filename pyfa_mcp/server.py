@@ -149,13 +149,16 @@ def evaluate_fit(fit: str, conditions: dict | None = None) -> dict:
 @app.tool()
 @_tool
 def compare_fits(fits: list[str], conditions: dict | None = None,
-                 stats: list[str] | None = None) -> dict:
+                 stats: list[str] | None = None, variants: list[dict] | None = None) -> dict:
     """Evaluate many fits under the same conditions into one table. `stats` picks
     columns by dotted key from evaluate_fit's output (e.g. "tank.ehp.total",
     "offense.dps.total", "targeting.lock_range_m"); omitted = a standard set.
+    variants: a list of partial conditions, each merged over `conditions` (top-level
+    keys replace), giving one row per fit and variant: e.g. one fit under several
+    booster fits, damage profiles or phenomena in a single call.
     A fit that fails gets an `error` in its row; the others still compute.
     To check whether a fit can be improved, use marginal_swaps."""
-    return evaluate.compare(fits, conditions, stats)
+    return evaluate.compare(fits, conditions, stats, variants)
 
 
 # --- search ------------------------------------------------------------------

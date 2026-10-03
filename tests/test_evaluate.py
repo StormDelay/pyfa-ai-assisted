@@ -1,6 +1,7 @@
 import pytest
 
 from pyfa_mcp import conditions, eft, evaluate
+from tests import wyvern
 
 
 def test_evaluate_shape(booted, zealot_eft, no_fits_left):
@@ -88,3 +89,21 @@ def test_projected_drones_leave_nothing(booted, zealot_eft, no_fits_left):
     evaluate.evaluate(zealot_eft, {"projected": [{"item": "Berserker TP-900", "count": 2}]})
     with eos.db.saveddata_engine.connect() as connection:
         assert connection.exec_driver_sql("SELECT count(*) FROM drones").scalar() == 0
+
+
+def test_t11_one_fit_under_five_fleets(booted, no_fits_left):
+    hulls = ["Vulture", "Nighthawk", "Claymore", "Sleipnir", "Simurgh"]
+    variants = [{"command": [{"fit": f"[{h}, b]\n\n\n"
+                              "Shield Command Burst II, Shield Harmonizing Charge\n"}]}
+                for h in hulls]
+    result = evaluate.compare([wyvern.BRIEF], None, ["tank.ehp.total"], variants)
+    assert [r["variant"] for r in result["rows"]] == [0, 1, 2, 3, 4]
+    assert "Simurgh" in result["rows"][4]["variant_label"]
+    assert result["rows"][4]["tank.ehp.total"] > result["rows"][0]["tank.ehp.total"]
+    assert result["columns"] == ["fit", "variant", "tank.ehp.total"]
+
+
+def test_variants_must_be_a_list_of_objects(booted):
+    for wrong in ([], ["uniform"]):
+        with pytest.raises(ValueError, match="variants"):
+            evaluate.compare([wyvern.BRIEF], None, None, wrong)
