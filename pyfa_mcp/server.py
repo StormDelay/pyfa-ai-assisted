@@ -48,10 +48,13 @@ pyfa-mcp computes EVE Online fits with Pyfa's own engine.
   expiring items unless availability="all"; tell the user which you used.
 - For a best/max/min fit, set optimize_fit's allow.command and
   allow.phenomena unless the user fixed the fleet: it then picks the bursts
-  and phenomena from the game data. A whole fit (implants, boosters, heat
-  and fleet) needs more than the default budget: pass budget=
-  {"evaluations": 400000, "seconds": 300}, and if search.converged is
-  still false, say so and offer to search longer.
+  and phenomena from the game data.
+- optimize_fit's default budget lets even a whole fit (implants, boosters,
+  heat, fleet) finish, which can take a few minutes. When an approximate
+  answer is enough (a quick look, a first pass, comparing ideas), pass a
+  smaller budget such as {"seconds": 30}: the result is then the best found
+  so far. Whenever search.converged is false, tell the user the answer may
+  not be the best and offer to search longer.
 - The game data may be newer than your training. Find ships and items
   with the tools (list_ships can_fit/bonus, find_modifiers, whats_new),
   never from memory.
@@ -255,7 +258,9 @@ def optimize_fit(fit: str, objective: str, conditions: dict | None = None,
     conditions.command empty then. Otherwise command bursts, phenomena,
     projected and environment stay as conditions set them.
     locked: EFT lines that must stay. constraints: [{"stat", "eq"|"lte"|"gte":
-    value}]. budget: {evaluations, seconds} (default 20000, 60). Officer and
+    value}]. budget: {evaluations, seconds} (default 400000, 300: enough for a
+    whole fit to finish, which can take minutes; pass less, e.g. {"seconds":
+    30}, when an approximate answer is enough). Officer and
     Deadspace items are left out unless meta includes them (meta=["all"]).
     Serenity-only, character-age-limited and expiring items are left out unless
     availability="all" (default "tq"); rows show an item's `limits`.

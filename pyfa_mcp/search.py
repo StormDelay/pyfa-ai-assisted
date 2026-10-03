@@ -967,7 +967,7 @@ def optimize_fit(fit: str, objective: str, raw_conditions: dict | None = None,
     for name, value in (budget or {}).items():
         if not isinstance(value, int | float) or isinstance(value, bool) or value <= 0:
             raise ValueError(f"budget.{name} must be a number above 0")
-    budget = {"evaluations": 20000, "seconds": 60, **(budget or {})}
+    budget = {"evaluations": 400_000, "seconds": 300, **(budget or {})}
     ref, left_out = _fitted(_baseline_eft(fit))
     sources = {"module", "rig", "charge"} | ({"implant"} if allow["implants"] else set()) \
         | ({"booster"} if allow["boosters"] else set())

@@ -576,7 +576,7 @@ def test_replay_the_hand_tested_wyvern(booted, no_fits_left):
     allow = {"slots": ["high", "mid", "low", "rig"], "implants": True, "boosters": True,
              "module_states": ["active", "overheated"], "command": True, "phenomena": True}
     result = search.optimize_fit("Wyvern", "tank.ehp.total", allow=allow, meta=["all"],
-                                 top_k=1, budget={"seconds": 1800, "evaluations": 400_000})
+                                 top_k=1)  # the default budget
     assert result["search"]["converged"] is True
     best = result["best"][0]
     assert best["polish"]["converged"] is True
