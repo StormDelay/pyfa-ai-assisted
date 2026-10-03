@@ -1,4 +1,5 @@
 import os
+import shutil
 import subprocess
 import sys
 import time
@@ -22,23 +23,7 @@ def small_pool(booted, monkeypatch):
     pool.configure(before)
 
 
-def _alive(pid: int) -> bool:
-    if sys.platform == "win32":
-        import ctypes
-        kernel32 = ctypes.windll.kernel32
-        kernel32.OpenProcess.restype = ctypes.c_void_p
-        handle = kernel32.OpenProcess(0x00100000, False, pid)  # SYNCHRONIZE
-        if not handle:
-            return False
-        try:
-            return kernel32.WaitForSingleObject(ctypes.c_void_p(handle), 0) == 0x102
-        finally:
-            kernel32.CloseHandle(ctypes.c_void_p(handle))
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    return True
+_alive = pool._alive
 
 
 def test_pool_matches_inline(small_pool, zealot_eft, no_fits_left):
@@ -178,3 +163,27 @@ def test_a_dead_worker_names_the_in_process_fallback(booted, monkeypatch, zealot
     monkeypatch.setattr(pool, "_size", 2)
     with pytest.raises(pool.PoolError, match="--workers 0"):
         pool.run(zealot_eft, None, KEYS, _empty(0))
+
+
+def test_worker_dirs_are_per_server_and_only_dead_servers_are_swept(small_pool, zealot_eft):
+    from pyfa_mcp import eosboot
+    base = eosboot.booted_dir() / "workers"
+    sibling = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(600)"])
+    gone = subprocess.Popen([sys.executable, "-c", "pass"])
+    gone.wait()
+    try:
+        live = base / str(sibling.pid) / "1234"
+        dead = base / str(gone.pid) / "5678"
+        for d in (live, dead):
+            d.mkdir(parents=True)
+        pool.run(zealot_eft, None, KEYS, _empty(0))
+        own = base / str(os.getpid())
+        assert {p.name for p in own.iterdir()} == {str(p) for p in pool.describe()["pids"]}
+        assert live.is_dir()
+        assert not dead.parent.exists()
+        pool.shutdown()
+        assert not own.exists()
+    finally:
+        sibling.kill()
+        sibling.wait()
+        shutil.rmtree(base / str(sibling.pid), ignore_errors=True)

@@ -8,6 +8,7 @@ process dies.
 """
 from __future__ import annotations
 
+import contextlib
 import json
 import multiprocessing
 import os
@@ -111,13 +112,37 @@ def _start(new: bool) -> ProcessPoolExecutor | None:
         if _idle is not None:
             _idle.cancel()
         if _executor is None:
-            base = eosboot.booted_dir() / "workers"
-            shutil.rmtree(base, ignore_errors=True)  # left by killed workers
+            _sweep()
             _executor = ProcessPoolExecutor(
                 max_workers=_size, mp_context=multiprocessing.get_context("spawn"),
                 initializer=_init_worker,
-                initargs=(os.getpid(), str(base), str(pyfadata.pyfa_dir())))
+                initargs=(os.getpid(), str(_own_dir()), str(pyfadata.pyfa_dir())))
         return _executor
+
+
+def _own_dir() -> Path:
+    """workers/<server pid>/<worker pid> holds each worker's database: servers
+    sharing a data dir never touch each other's live workers."""
+    return eosboot.booted_dir() / "workers" / str(os.getpid())
+
+
+def _sweep() -> None:
+    """Remove what servers that are gone left behind (their workers died with them)."""
+    base = eosboot.booted_dir() / "workers"
+    for server in base.iterdir() if base.is_dir() else ():
+        if server.name.isdigit() and int(server.name) != os.getpid()                 and not _alive(int(server.name)):
+            shutil.rmtree(server, ignore_errors=True)
+
+
+def _stop(executor: ProcessPoolExecutor) -> None:
+    """Stop the workers, then remove their databases."""
+    pids = list(executor._processes)
+    executor.shutdown(wait=True, cancel_futures=True)
+    own = _own_dir()
+    for pid in pids:
+        shutil.rmtree(own / str(pid), ignore_errors=True)
+    with contextlib.suppress(OSError):
+        own.rmdir()  # stays while a newer pool's workers use it
 
 
 def _release() -> None:
@@ -139,7 +164,7 @@ def _idle_shutdown() -> None:
         _idle = None
         executor, _executor = _executor, None
     if executor is not None:
-        executor.shutdown(wait=False, cancel_futures=True)
+        _stop(executor)
 
 
 def shutdown() -> None:
@@ -150,7 +175,7 @@ def shutdown() -> None:
             _idle = None
         executor, _executor = _executor, None
     if executor is not None:
-        executor.shutdown(wait=False, cancel_futures=True)
+        _stop(executor)
 
 
 def _init_worker(parent_pid: int, base: str, pyfa_dir: str) -> None:
@@ -166,6 +191,27 @@ def _init_worker(parent_pid: int, base: str, pyfa_dir: str) -> None:
     threading.Thread(target=_exit_with, args=(parent_pid,), daemon=True).start()
     pyfadata.set_dir(Path(pyfa_dir))  # the user's own profiles resolve as in the server
     eosboot.boot(Path(base) / str(os.getpid()))
+
+
+def _alive(pid: int) -> bool:
+    if sys.platform == "win32":
+        import ctypes
+        kernel32 = ctypes.windll.kernel32
+        kernel32.OpenProcess.restype = ctypes.c_void_p
+        handle = kernel32.OpenProcess(0x00100000, False, pid)  # SYNCHRONIZE
+        if not handle:
+            return False
+        try:
+            return kernel32.WaitForSingleObject(ctypes.c_void_p(handle), 0) == 0x102  # TIMEOUT
+        finally:
+            kernel32.CloseHandle(ctypes.c_void_p(handle))
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True  # alive, someone else's
+    return True
 
 
 def _exit_with(parent_pid: int) -> None:
