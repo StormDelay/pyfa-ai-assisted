@@ -155,7 +155,7 @@ def compare_fits(fits: list[str], conditions: dict | None = None,
 @_tool
 def find_modifiers(fit: str, stats: list[str], sources: list[str] | None = None,
                    meta: list[str] | None = None, conditions: dict | None = None,
-                   expand: list[str] | None = None) -> dict:
+                   expand: list[str] | None = None, verbose: bool = False) -> dict:
     """What can change a stat on this hull. Use it before saying what is best or
     max/min/optimal, and whenever the user asks what affects or what else could
     raise or lower a stat (EHP, DPS, lock range, align...). Measures every legal
@@ -169,24 +169,29 @@ def find_modifiers(fit: str, stats: list[str], sources: list[str] | None = None,
     prefix "-" when lower is better ("-navigation.align_time_s"): it orders the
     rows and decides what counts as a drawback (the first stat ranks).
     sources: module, rig, subsystem, charge, implant, booster, command_burst,
-    phenomena, projected, environment (default all). Then call optimize_fit."""
-    return search.find_modifiers(fit, stats, sources, meta, conditions, expand)
+    phenomena, projected, environment (default all). Then call optimize_fit.
+    Output is compact (excluded and pruned items as counts by reason);
+    verbose=true lists every item."""
+    return search.find_modifiers(fit, stats, sources, meta, conditions, expand,
+                                 verbose=verbose)
 
 
 @app.tool()
 @_tool
 def marginal_swaps(fit: str, objective: str, conditions: dict | None = None,
                    meta: list[str] | None = None, include_empty_slots: bool = True,
-                   top_n: int = 10) -> dict:
+                   top_n: int = 10, verbose: bool = False) -> dict:
     """Is there any single change that makes this fit better? Use it to audit a
     hand-built fit before recommending it as the best or max for a stat. Tries
     every module, rig, charge, implant and booster that fits each slot, every
     empty slot and every removal; returns the valid ones sorted by gain
     (objective: a stat key; prefix "-" to minimize, e.g. "-navigation.align_time_s").
     The top swap is confirmed with evaluate_fit. Officer and Deadspace items are
-    left out unless meta includes them (meta=["all"])."""
+    left out unless meta includes them (meta=["all"]).
+    Output is compact (excluded and pruned items as counts by reason);
+    verbose=true lists every item."""
     return search.marginal_swaps(fit, objective, conditions, meta, include_empty_slots,
-                                 top_n)
+                                 top_n, verbose=verbose)
 
 
 @app.tool()
@@ -194,7 +199,8 @@ def marginal_swaps(fit: str, objective: str, conditions: dict | None = None,
 def optimize_fit(fit: str, objective: str, conditions: dict | None = None,
                  allow: dict | None = None, meta: list[str] | None = None,
                  locked: str | None = None, constraints: list[dict] | None = None,
-                 top_k: int = 5, budget: dict | None = None) -> dict:
+                 top_k: int = 5, budget: dict | None = None,
+                 verbose: bool = False) -> dict:
     """Search for the best fit for a stat. Use it whenever the user asks for the
     best, highest, max, min-max or optimal fit, or before recommending a module
     choice. It builds its candidates from every item that affects the stat, so it
@@ -210,9 +216,11 @@ def optimize_fit(fit: str, objective: str, conditions: dict | None = None,
     reproduce it there (module states included: EFT has no heat), and with heat
     allowed `objective_cold` is the same fit unheated. best[0]["polish"] lists
     the single swaps a last pass made. `search.converged` says whether the search
-    finished inside the budget."""
+    finished inside the budget. Output is compact: counts for considered, pruned
+    and excluded items, and best[1:] as a diff against best[0]; verbose=true
+    lists everything whole."""
     return search.optimize_fit(fit, objective, conditions, allow, meta, locked,
-                               constraints, top_k, budget)
+                               constraints, top_k, budget, verbose=verbose)
 
 
 @app.tool()

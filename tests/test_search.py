@@ -1,3 +1,5 @@
+import json
+
 import pytest
 
 from pyfa_mcp import evaluate, pool, search, store
@@ -29,7 +31,7 @@ def test_t1_every_source_of_shield_hp(booted, no_fits_left):
 
 def test_t2_assault_damage_control_is_excluded_with_a_reason(booted, no_fits_left):
     result = search.find_modifiers("Wyvern", ["tank.ehp.total"], sources=["module"],
-                                   meta=["all"])
+                                   meta=["all"], verbose=True)
     rows = [e for e in result["excluded"] if e["group"] == "Damage Control"
             and e["reason"].startswith("cannot be fitted to")]
     assert rows and any("Assault" in name for name in rows[0]["examples"])
@@ -215,7 +217,7 @@ def test_optimize_respects_constraints_and_budget(booted, zealot_eft, no_fits_le
     speed = evaluate.evaluate(zealot_eft, None)["navigation"]["max_speed"]
     capped = search.optimize_fit(zealot_eft, "offense.dps.total",
                                  constraints=[{"stat": "navigation.max_speed", "gte": speed}],
-                                 allow={"slots": ["low", "mid"]}, top_k=2)
+                                 allow={"slots": ["low", "mid"]}, top_k=2, verbose=True)
     assert capped["best"]
     for fit in capped["best"]:
         assert fit["valid"] is True
@@ -465,3 +467,28 @@ def test_t3_a_result_reproduces_with_its_conditions(booted, zealot_eft, no_fits_
     assert _ehp(best["eft"], best["conditions"]) == pytest.approx(best["objective_value"],
                                                                  rel=1e-12)
     assert best["objective_cold"] < best["objective_value"]
+
+
+def test_t4_compact_output_fits_a_context(booted, no_fits_left):
+    allow = {"slots": ["high", "mid", "low", "rig"], "implants": True, "boosters": True,
+             "module_states": ["active", "overheated"]}
+    compact = search.optimize_fit("Wyvern", "tank.ehp.total", wyvern.CONDITIONS,
+                                  allow=allow, budget={"seconds": 30})
+    assert len(json.dumps(compact)) < 24_000
+    assert isinstance(compact["considered"]["low"], int)
+    assert set(compact["pruned"]) == {"counts", "near_winners"}
+    assert len(compact["pruned"]["near_winners"]) <= 20
+    assert all(isinstance(n, int) for n in compact["excluded"].values())
+    assert all(set(b) == {"objective_value", "valid", "diff"} for b in compact["best"][1:])
+
+
+def test_verbose_brings_back_every_name(booted, zealot_eft, no_fits_left):
+    full = search.optimize_fit(zealot_eft, "tank.ehp.total", allow={"slots": ["low"]},
+                               top_k=2, verbose=True)
+    assert isinstance(full["considered"]["low"], list)
+    assert isinstance(full["pruned"], list) and isinstance(full["excluded"], list)
+    assert all("eft" in b for b in full["best"])
+    rows = search.find_modifiers(zealot_eft, ["tank.ehp.total"], sources=["rig"])
+    assert all(isinstance(n, int) for n in rows["excluded"].values())
+    swaps = search.marginal_swaps(zealot_eft, "tank.ehp.total")
+    assert all(isinstance(n, int) for n in swaps["coverage"]["excluded"].values())

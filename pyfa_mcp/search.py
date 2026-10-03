@@ -120,6 +120,10 @@ def _excluded_rows(excluded: list[dict]) -> list[dict]:
             for (g, r), n in sorted(by.items())]
 
 
+def _excluded_counts(excluded: list[dict]) -> dict:
+    return dict(sorted(Counter(e["reason"] for e in excluded).items()))
+
+
 def _flat(result: dict) -> dict:
     return stats.flatten({k: v for k, v in result.items()
                           if k not in ("fit", "ship", "applied", "warnings")})
@@ -253,7 +257,7 @@ def _expand(rows: list[dict], groups: list[dict], expand: list[str] | None) -> l
 
 def find_modifiers(fit: str, stat_keys: list[str], sources: list[str] | None = None,
                    meta: list[str] | None = None, raw_conditions: dict | None = None,
-                   expand: list[str] | None = None) -> dict:
+                   expand: list[str] | None = None, verbose: bool = False) -> dict:
     signs: dict[str, int] = {}
     for text in stat_keys or []:
         key, sign = _objective(text)
@@ -321,7 +325,7 @@ def find_modifiers(fit: str, stat_keys: list[str], sources: list[str] | None = N
         "baseline": {k: baseline[k] for k in stat_keys},
         "groups": groups,
         "candidates": _expand(rows, groups, expand),
-        "excluded": _excluded_rows(found.excluded + failed),
+        "excluded": (_excluded_rows if verbose else _excluded_counts)(found.excluded + failed),
         "pinned": pinned,
         "coverage": {"items_scanned": found.scanned, "measured": len(trials),
                      "effects_unresolved": drift.unhandled_for(
@@ -410,7 +414,7 @@ def _swap_places(b, include_empty: bool, options) -> list[tuple]:
 
 def marginal_swaps(fit: str, objective: str, raw_conditions: dict | None = None,
                    meta: list[str] | None = None, include_empty_slots: bool = True,
-                   top_n: int = 10) -> dict:
+                   top_n: int = 10, verbose: bool = False) -> dict:
     if top_n < 1:
         raise ValueError("top_n must be at least 1")
     key, sign = _objective(objective)
@@ -470,7 +474,8 @@ def marginal_swaps(fit: str, objective: str, raw_conditions: dict | None = None,
     return {"applied": applied, "objective": objective, "baseline": base, "swaps": top,
             "no_improvement_found": not improving, **invalid_base, "warnings": warnings,
             "coverage": {"swaps_tried": len(trials), "invalid_dropped": invalid,
-                         "failed": failed, "excluded": _excluded_rows(found.excluded)}}
+                         "failed": failed, "excluded": (_excluded_rows if verbose else _excluded_counts)(
+                             found.excluded)}}
 
 
 # --- optimize_fit ------------------------------------------------------------
@@ -800,10 +805,38 @@ def _polish(search, options, budget, started) -> dict:
     return out
 
 
+_NEAR_WINNERS = 20
+
+
+def _pruned_summary(pruned: dict, info: dict, best_eft: str | None) -> dict:
+    """Counts by kind, and the dominated options in an item group the best fit uses:
+    the ones that explain a choice."""
+    import eos.db
+
+    counts = Counter("dominated" if why.startswith("dominated") else "no effect"
+                     for why in pruned.values())
+    fitted = set()
+    for name in _locked_counts(best_eft)[1].values() if best_eft else ():
+        item = eos.db.getItem(name)
+        if item is not None:
+            fitted.add(item.group.name)
+    near = [{"name": n, "reason": why} for n, why in sorted(pruned.items())
+            if why.startswith("dominated") and n in info and info[n].group in fitted]
+    return {"counts": dict(sorted(counts.items())), "near_winners": near[:_NEAR_WINNERS]}
+
+
+def _diff(first: dict, other: dict) -> dict:
+    a, b = (Counter(line for line in fit["eft"].splitlines()[1:] if line.strip())
+            for fit in (first, other))
+    return {"objective_value": other["objective_value"], "valid": other["valid"],
+            "diff": {"remove": sorted((a - b).elements()), "add": sorted((b - a).elements())}}
+
+
 def optimize_fit(fit: str, objective: str, raw_conditions: dict | None = None,
                  allow: dict | None = None, meta: list[str] | None = None,
                  locked: str | None = None, constraints: list | None = None,
-                 top_k: int = 5, budget: dict | None = None) -> dict:
+                 top_k: int = 5, budget: dict | None = None,
+                 verbose: bool = False) -> dict:
     started = time.monotonic()
     key, sign = _objective(objective)
     allow, cons = _allow(allow), _constraints(constraints)
@@ -927,19 +960,23 @@ def optimize_fit(fit: str, objective: str, raw_conditions: dict | None = None,
         best.append(entry)
     if best:
         best[0]["polish"] = polish
-    out = {"applied": applied, "best": best}
+    out = {"applied": applied,
+           "best": best if verbose or not best else best[:1] + [_diff(best[0], b)
+                                                              for b in best[1:]]}
     if not best:
         common = search.problems.most_common(1)
         out["reason"] = (
             f"the budget ran out ({search.stopped_by}) before any valid fit was found"
             if not converged else "every fit tried was invalid"
         ) + (f"; most common problem: {common[0][0]}" if common else "")
+    info = {o.name: o for opts in options.values() for o in opts}
     return {
         **out,
-        "considered": {pk: sorted({o.name for o in opts})
+        "considered": {pk: (sorted if verbose else len)({o.name for o in opts})
                        for pk, opts in considered.items()},
-        "pruned": [{"name": n, "reason": r} for n, r in sorted(pruned.items())],
-        "excluded": _excluded_rows(found.excluded),
+        "pruned": ([{"name": n, "reason": r} for n, r in sorted(pruned.items())] if verbose
+                   else _pruned_summary(pruned, info, best[0]["eft"] if best else None)),
+        "excluded": (_excluded_rows if verbose else _excluded_counts)(found.excluded),
         "search": {"method": _METHOD, "evaluations": search.evaluations,
                    "seconds": round(time.monotonic() - started, 1),
                    "converged": converged, "stopped_by": search.stopped_by,
