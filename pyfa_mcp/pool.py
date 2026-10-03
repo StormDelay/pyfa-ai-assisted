@@ -19,7 +19,7 @@ from concurrent.futures import ProcessPoolExecutor
 from concurrent.futures.process import BrokenProcessPool
 from pathlib import Path
 
-from pyfa_mcp import bench, eosboot
+from pyfa_mcp import bench, eosboot, pyfadata
 
 INLINE_LIMIT = 300
 IDLE_SECONDS = 60.0
@@ -115,7 +115,8 @@ def _start(new: bool) -> ProcessPoolExecutor | None:
             shutil.rmtree(base, ignore_errors=True)  # left by killed workers
             _executor = ProcessPoolExecutor(
                 max_workers=_size, mp_context=multiprocessing.get_context("spawn"),
-                initializer=_init_worker, initargs=(os.getpid(), str(base)))
+                initializer=_init_worker,
+                initargs=(os.getpid(), str(base), str(pyfadata.pyfa_dir())))
         return _executor
 
 
@@ -152,7 +153,7 @@ def shutdown() -> None:
         executor.shutdown(wait=False, cancel_futures=True)
 
 
-def _init_worker(parent_pid: int, base: str) -> None:
+def _init_worker(parent_pid: int, base: str, pyfa_dir: str) -> None:
     # The server's stdout is the MCP stream; Pyfa prints while it boots.
     devnull = os.open(os.devnull, os.O_WRONLY)
     try:
@@ -163,6 +164,7 @@ def _init_worker(parent_pid: int, base: str) -> None:
     if sys.stderr is None:
         sys.stderr = open(os.devnull, "w")
     threading.Thread(target=_exit_with, args=(parent_pid,), daemon=True).start()
+    pyfadata.set_dir(Path(pyfa_dir))  # the user's own profiles resolve as in the server
     eosboot.boot(Path(base) / str(os.getpid()))
 
 
