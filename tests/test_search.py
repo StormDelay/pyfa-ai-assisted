@@ -492,3 +492,27 @@ def test_verbose_brings_back_every_name(booted, zealot_eft, no_fits_left):
     assert all(isinstance(n, int) for n in rows["excluded"].values())
     swaps = search.marginal_swaps(zealot_eft, "tank.ehp.total")
     assert all(isinstance(n, int) for n in swaps["coverage"]["excluded"].values())
+
+
+def test_t5_limited_items_are_hidden_unless_asked(booted, no_fits_left):
+    hidden = search.find_modifiers("Wyvern", ["tank.ehp.total"], sources=["booster"],
+                                   expand=["*"])
+    assert not [n for n in _names(hidden) if "Capsuleer" in n or n.startswith("Serenity")]
+    assert 'availability="all"' in hidden["applied"]["availability"]
+    shown = search.find_modifiers("Wyvern", ["tank.ehp.total"], sources=["booster"],
+                                  availability="all", expand=["*"])
+    chip = next(c for c in shown["candidates"]
+                if c["name"] == "Advanced Capsuleer Defense Augmentation Chip")
+    assert chip["limits"] == ["Serenity only", "characters under 100 days"]
+    pods = {"slots": [], "boosters": True}
+    tq = search.optimize_fit("Rifter", "tank.ehp.total", allow=pods, top_k=1)
+    assert "Capsuleer" not in tq["best"][0]["eft"]
+    everything = search.optimize_fit("Rifter", "tank.ehp.total", allow=pods, top_k=1,
+                                     availability="all")
+    assert "Capsuleer" in everything["best"][0]["eft"]
+
+
+def test_availability_names_its_values(booted, zealot_eft):
+    for wrong in ("TQ", "theoretical"):
+        with pytest.raises(ValueError, match='availability: use "tq" .* or "all"'):
+            search.find_modifiers(zealot_eft, ["tank.ehp.total"], availability=wrong)

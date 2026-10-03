@@ -106,10 +106,10 @@ def _run(ref: str, raw: dict, keys: list[str], trials: list) -> list:
     return _cached(_TRIALS, key, lambda: pool.run(ref, raw, list(keys), trials))
 
 
-def _pool(fit, sources: set[str], meta: list[str] | None):
+def _pool(fit, sources: set[str], meta: list[str] | None, availability: str | None = None):
     subs = tuple(sorted(m.item.ID for m in fit.modules if not m.isEmpty and m.slot == 5))
-    key = (fit.ship.item.ID, subs, json.dumps(meta), tuple(sorted(sources)))
-    return _cached(_POOLS, key, lambda: candidates.build(fit, sources, meta))
+    key = (fit.ship.item.ID, subs, json.dumps(meta), tuple(sorted(sources)), availability)
+    return _cached(_POOLS, key, lambda: candidates.build(fit, sources, meta, availability))
 
 
 def _excluded_rows(excluded: list[dict]) -> list[dict]:
@@ -208,7 +208,7 @@ def _row(c, delta, heat, baseline, replaced, problems, signs) -> dict:
             "delta_overheated": None if heat is None else
             {k: heat.values[k] - baseline[k] for k in delta},
             "exclusive_group": c.exclusive_group, "modifies": list(c.modifies),
-            "notes": notes}
+            "notes": notes, **({"limits": list(c.limits)} if c.limits else {})}
 
 
 def _reference(members: list[dict]) -> dict | None:
@@ -230,7 +230,8 @@ def _groups(rows: list[dict], first: str, sign: int) -> list[dict]:
         out.append({
             "group": group, "source": source, "slot": top["slot"], "variants": len(members),
             "best": {**{k: top[k] for k in ("name", "meta", "cpu", "pg", "calibration")},
-                     "delta": top["delta"]},
+                     "delta": top["delta"], **({"limits": top["limits"]} if "limits" in top
+                                              else {})},
             "reference": None if ref is None or ref is top else
             {"name": ref["name"], "meta": ref["meta"], "delta": ref["delta"]},
             "delta_range": [members[-1]["delta"][first], top["delta"][first]],
@@ -257,7 +258,9 @@ def _expand(rows: list[dict], groups: list[dict], expand: list[str] | None) -> l
 
 def find_modifiers(fit: str, stat_keys: list[str], sources: list[str] | None = None,
                    meta: list[str] | None = None, raw_conditions: dict | None = None,
-                   expand: list[str] | None = None, verbose: bool = False) -> dict:
+                   expand: list[str] | None = None, availability: str | None = None,
+                   verbose: bool = False) -> dict:
+    candidates.availability_filter(availability)  # a typo fails before any work
     signs: dict[str, int] = {}
     for text in stat_keys or []:
         key, sign = _objective(text)
@@ -276,9 +279,10 @@ def find_modifiers(fit: str, stat_keys: list[str], sources: list[str] | None = N
         keys = stat_keys + [f"ship.{name}" for name, _ in caps.values()
                             if f"ship.{name}" not in stat_keys]
         baseline = b.measure(keys)
-        found = _pool(b.fit, wanted, meta)
+        found = _pool(b.fit, wanted, meta, availability)
         trials, owners = _add_trials(b, found.candidates)
-        applied = {**b.applied, "meta": found.meta_note}
+        applied = {**b.applied, "meta": found.meta_note,
+                   "availability": found.availability_note}
     results = _run(ref, raw, keys, trials)
 
     first = stat_keys[0]
@@ -354,6 +358,7 @@ class Option(NamedTuple):
     cpu: float = 0.0
     pg: float = 0.0
     calibration: float = 0.0
+    limits: tuple = ()
 
     def edit(self, where) -> Edit:
         return Edit(where, self.type_id, self.charge_id, self.state)
@@ -376,13 +381,13 @@ def _options(cands, heat: bool) -> dict[str, list[Option]]:
             if len(c.edits) == 1:  # sets are moves of their own
                 place = f"{c.source} {c.edits[0].where[1]}"
                 out.setdefault(place, []).append(
-                    Option(place, c.type_id, None, None, c.name, c.group))
+                    Option(place, c.type_id, None, None, c.name, c.group, limits=c.limits))
             continue
         for state in (("active", "overheated") if heat and c.overheat else ("active",)):
             name = c.name + (" (overheated)" if state == "overheated" else "")
             out.setdefault(c.slot, []).append(Option(c.slot, c.type_id, c.charge_id, state,
                                                      name, c.group, c.cpu, c.pg,
-                                                     c.calibration))
+                                                     c.calibration, c.limits))
     return out
 
 
@@ -414,7 +419,9 @@ def _swap_places(b, include_empty: bool, options) -> list[tuple]:
 
 def marginal_swaps(fit: str, objective: str, raw_conditions: dict | None = None,
                    meta: list[str] | None = None, include_empty_slots: bool = True,
-                   top_n: int = 10, verbose: bool = False) -> dict:
+                   top_n: int = 10, availability: str | None = None,
+                   verbose: bool = False) -> dict:
+    candidates.availability_filter(availability)  # a typo fails before any work
     if top_n < 1:
         raise ValueError("top_n must be at least 1")
     key, sign = _objective(objective)
@@ -423,7 +430,7 @@ def marginal_swaps(fit: str, objective: str, raw_conditions: dict | None = None,
     with bench.Bench(ref, raw) as b:
         base = b.measure([key])[key]
         base_problems = b.problems()
-        found = _pool(b.fit, _LOCAL, meta)
+        found = _pool(b.fit, _LOCAL, meta, availability)
         options = _options(found.candidates, heat=False)
         trials, labels = [], []
         for where, occ in _swap_places(b, include_empty_slots, options):
@@ -431,17 +438,18 @@ def marginal_swaps(fit: str, objective: str, raw_conditions: dict | None = None,
             removed = None if occ is None else b.name_of(occ[0])
             if occ is not None:
                 trials.append(([Edit(where, None)], None))
-                labels.append((place, removed, None))
+                labels.append((place, removed, None, ()))
             for option in options.get(place, []):
                 if occ is not None and (option.type_id, option.charge_id) == occ[:2]:
                     continue
                 trials.append(([option.edit(where)], None))
-                labels.append((place, removed, option.name))
-        applied = {**b.applied, "meta": found.meta_note}
+                labels.append((place, removed, option.name, option.limits))
+        applied = {**b.applied, "meta": found.meta_note,
+                   "availability": found.availability_note}
     results = _run(ref, raw, [key], trials)
 
     rows, invalid, failed = [], 0, []
-    for (place, removed, added), (edits, _), trial in zip(labels, trials, results):
+    for (place, removed, added, lim), (edits, _), trial in zip(labels, trials, results):
         if trial.values is None:
             failed.append({"remove": removed, "add": added, "error": trial.error})
             continue
@@ -450,7 +458,8 @@ def marginal_swaps(fit: str, objective: str, raw_conditions: dict | None = None,
             continue
         delta = trial.values[key] - base
         rows.append({"slot": place, "remove": removed, "add": added, "delta": delta,
-                     "new_value": trial.values[key], "valid": True, "_edits": edits})
+                     "new_value": trial.values[key], "valid": True, "_edits": edits,
+                     **({"limits": list(lim)} if lim else {})})
     rows.sort(key=lambda r: (-sign * r["delta"], r["add"] or "", r["remove"] or ""))
     improving = bool(rows) and sign * rows[0]["delta"] > 0 and not _zero(rows[0]["delta"], base)
     top, warnings = rows[:top_n], []
@@ -820,7 +829,9 @@ def _pruned_summary(pruned: dict, info: dict, best_eft: str | None) -> dict:
         item = eos.db.getItem(name)
         if item is not None:
             fitted.add(item.group.name)
-    near = [{"name": n, "reason": why} for n, why in sorted(pruned.items())
+    near = [{"name": n, "reason": why,
+             **({"limits": list(info[n].limits)} if info[n].limits else {})}
+            for n, why in sorted(pruned.items())
             if why.startswith("dominated") and n in info and info[n].group in fitted]
     return {"counts": dict(sorted(counts.items())), "near_winners": near[:_NEAR_WINNERS]}
 
@@ -836,11 +847,12 @@ def optimize_fit(fit: str, objective: str, raw_conditions: dict | None = None,
                  allow: dict | None = None, meta: list[str] | None = None,
                  locked: str | None = None, constraints: list | None = None,
                  top_k: int = 5, budget: dict | None = None,
-                 verbose: bool = False) -> dict:
+                 availability: str | None = None, verbose: bool = False) -> dict:
     started = time.monotonic()
     key, sign = _objective(objective)
     allow, cons = _allow(allow), _constraints(constraints)
     _numeric([key, *(s for s, _, _ in cons)])
+    candidates.availability_filter(availability)  # a typo fails before any work
     raw = _portable(raw_conditions)
     if raw.get("module_states"):
         raise ValueError("optimize_fit chooses the modules: set heat with "
@@ -859,7 +871,7 @@ def optimize_fit(fit: str, objective: str, raw_conditions: dict | None = None,
 
     with bench.Bench(ref, raw) as b:
         b.measure([key, *(s for s, _, _ in cons)])  # unknown keys fail here
-        found = _pool(b.fit, sources, meta)
+        found = _pool(b.fit, sources, meta, availability)
         options = {pk: opts for pk, opts in
                    _options(found.candidates, "overheated" in allow["module_states"]).items()
                    if pk in allow["slots"] or pk.split()[0] in ("implant", "booster")}
@@ -889,6 +901,7 @@ def optimize_fit(fit: str, objective: str, raw_conditions: dict | None = None,
             raise ValueError(f"locked: '{written[missing[0]]}' is not on the fit")
         options = {pk: opts for pk, opts in options.items() if pk in place_key.values()}
         applied = {**b.applied, "meta": found.meta_note,
+                   "availability": found.availability_note,
                    "heat": " and ".join(allow["module_states"]), "left_out": left_out}
 
     sets = [c for c in found.candidates if c.group == "Implant sets"]

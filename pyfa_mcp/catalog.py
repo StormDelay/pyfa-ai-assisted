@@ -1,6 +1,7 @@
 """Questions about the game data itself: what items and ships exist."""
 from __future__ import annotations
 
+import datetime
 import difflib
 import functools
 import re
@@ -51,19 +52,62 @@ def _meta(item) -> str:
     return item.metaGroup.name if item.metaGroup is not None else "Tech I"
 
 
+@functools.cache
+def _serenity_ids() -> frozenset:
+    import eos.db
+    with eos.db.gamedata_engine.connect() as connection:
+        rows = connection.exec_driver_sql(
+            "SELECT typeID FROM invtypes "
+            "WHERE typeDescription LIKE '%available on Serenity%'").fetchall()
+    return frozenset(r[0] for r in rows)
+
+
+def limits(item) -> list[str]:
+    """Why most pilots cannot use `item`; empty when anyone on Tranquility can."""
+    out = []
+    if item.ID in _serenity_ids() or item.name.startswith("Serenity "):
+        out.append("Serenity only")
+    hours = item.getAttribute("boosterMaxCharAgeHours")
+    if hours:
+        out.append(f"characters under {round(hours / 24)} days")
+    days = item.getAttribute("boosterLastInjectionDatetime")  # days since 1970-01-01
+    if days:
+        expires = datetime.date(1970, 1, 1) + datetime.timedelta(days=int(days))
+        out.append(f"expires {expires.isoformat()}")
+    return out
+
+
+@functools.cache
+def client_build() -> str | None:
+    import eos.db
+    with eos.db.gamedata_engine.connect() as connection:
+        meta = dict(connection.exec_driver_sql(
+            "SELECT field_name, field_value FROM metadata").fetchall())
+    return meta.get("client_build")
+
+
 def _slot(item) -> str | None:
     for effect, slot in _SLOT_EFFECTS.items():
         if effect in item.effects:
             return slot
+    if item.category.name == "Implant":
+        for attr, kind in (("implantness", "implant"), ("boosterness", "booster")):
+            value = item.getAttribute(attr)
+            if value:
+                return f"{kind} {int(value)}"
     return None
 
 
 def _row(item) -> dict:
-    return {
+    row = {
         "name": item.name, "type_id": item.ID, "group": item.group.name,
         "category": item.category.name, "meta": _meta(item), "slot": _slot(item),
         "cpu": item.getAttribute("cpu"), "powergrid": item.getAttribute("power"),
     }
+    found = limits(item)
+    if found:
+        row["limits"] = found
+    return row
 
 
 def published_items(categories=(), groups=()) -> list:
@@ -151,7 +195,8 @@ def item_info(name: str) -> dict:
         raise CatalogError(f"unknown item '{name}'"
                            + (f" (did you mean: {', '.join(close)}?)" if close else ""))
     return {
-        **{k: v for k, v in _row(item).items() if k not in ("cpu", "powergrid", "slot")},
+        **{k: v for k, v in _row(item).items()
+           if k not in ("cpu", "powergrid") and not (k == "slot" and v is None)},
         "traits": _plain(item.traits.display) if item.traits is not None else "",
         "attributes": {attr_name: attr.value for attr_name, attr in item.attributes.items()},
     }

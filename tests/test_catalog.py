@@ -68,3 +68,16 @@ def test_valid_charges_survives_the_group_id_cache_collision(booted):
         queries.cache.pop((394, None), None)
     sebo = eos.db.getItem("Sensor Booster II")
     assert "Targeting Range Script" in [c.name for c in catalog.valid_charges(sebo)]
+
+
+def test_limits_and_pod_slots(booted):
+    import eos.db
+    chips = {r["name"]: r for r in catalog.search_items("Capsuleer Defense")}
+    assert chips["Advanced Capsuleer Defense Augmentation Chip"]["limits"] == [
+        "Serenity only", "characters under 100 days"]
+    dose = catalog.search_items("Agency 'Hardshell' TB3")[0]
+    assert "limits" not in dose and dose["slot"].startswith("booster ")
+    assert catalog.limits(eos.db.getItem("Imperial Electronics Booster I")) == [
+        "expires 2026-11-10"]
+    assert catalog.item_info("Halcyon B-5 Booster")["slot"] == "booster 5"
+    assert catalog.client_build()
