@@ -145,8 +145,9 @@ def test_t3_the_plate_should_have_been_a_pds(booted, no_fits_left):
 
 
 def test_marginal_swaps_minimizes_with_a_minus(booted, zealot_eft, no_fits_left):
-    result = search.marginal_swaps(zealot_eft, "-navigation.align_time_s", top_n=3)
+    result = search.marginal_swaps("[Rifter, x]\n", "-navigation.align_time_s", top_n=3)
     assert result["swaps"][0]["delta"] < 0
+    assert all(isinstance(n, int) for n in result["coverage"]["excluded"].values())
 
 
 # Found by applying marginal_swaps' own top swap to a Rifter with one Small Core Defense
@@ -473,7 +474,7 @@ def test_t4_compact_output_fits_a_context(booted, no_fits_left):
     allow = {"slots": ["high", "mid", "low", "rig"], "implants": True, "boosters": True,
              "module_states": ["active", "overheated"]}
     compact = search.optimize_fit("Wyvern", "tank.ehp.total", wyvern.CONDITIONS,
-                                  allow=allow, budget={"seconds": 30})
+                                  allow=allow, budget={"seconds": 10})  # size, not quality
     assert len(json.dumps(compact)) < 24_000
     assert isinstance(compact["considered"]["low"], int)
     assert set(compact["pruned"]) == {"counts", "near_winners"}
@@ -484,14 +485,12 @@ def test_t4_compact_output_fits_a_context(booted, no_fits_left):
 
 def test_verbose_brings_back_every_name(booted, zealot_eft, no_fits_left):
     full = search.optimize_fit(zealot_eft, "tank.ehp.total", allow={"slots": ["low"]},
-                               top_k=2, verbose=True)
+                               top_k=2, verbose=True, budget={"seconds": 10})
     assert isinstance(full["considered"]["low"], list)
     assert isinstance(full["pruned"], list) and isinstance(full["excluded"], list)
     assert all("eft" in b for b in full["best"])
     rows = search.find_modifiers(zealot_eft, ["tank.ehp.total"], sources=["rig"])
     assert all(isinstance(n, int) for n in rows["excluded"].values())
-    swaps = search.marginal_swaps(zealot_eft, "tank.ehp.total")
-    assert all(isinstance(n, int) for n in swaps["coverage"]["excluded"].values())
 
 
 def test_t5_limited_items_are_hidden_unless_asked(booted, no_fits_left):
