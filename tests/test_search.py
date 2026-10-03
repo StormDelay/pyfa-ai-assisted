@@ -200,6 +200,8 @@ def test_t4_t5_the_best_wyvern(booted, no_fits_left):
     assert best["objective_value"] > _ehp(wyvern.NO_DC, wyvern.HOT)
     lows = _lows(best["eft"])
     assert sum("Power Diagnostic System" in n for n in lows) == 3
+    rigs = [n for n in best["eft"].splitlines() if n == wyvern.RIG]
+    assert len(rigs) == 3
     assert sum("Damage Control" in n for n in lows) == 1
 
     cold = search.optimize_fit(wyvern.BRIEF, "tank.ehp.total", wyvern.CONDITIONS,
@@ -281,3 +283,45 @@ def test_an_empty_best_says_why(booted, no_fits_left):
     assert stuck["best"] == [] and stuck["search"]["converged"] is True
     assert stuck["reason"] == ("every fit tried was invalid; "
                                "most common problem: powergrid over by #")
+
+
+def test_search_refuses_stats_that_are_not_numbers(booted, zealot_eft):
+    with pytest.raises(ValueError, match="capacitor.lasts_s.*capacitor.delta_per_s"):
+        search.find_modifiers(zealot_eft, ["capacitor.lasts_s"])
+    with pytest.raises(ValueError, match="validity.problems.*validity.valid"):
+        search.marginal_swaps(zealot_eft, "validity.problems")
+    with pytest.raises(ValueError, match="capacitor.stable_at_percent"):
+        search.optimize_fit(zealot_eft, "-capacitor.stable_at_percent")
+    with pytest.raises(ValueError, match="capacitor.lasts_s"):
+        search.optimize_fit(zealot_eft, "tank.ehp.total",
+                            constraints=[{"stat": "capacitor.lasts_s", "gte": 100}])
+
+
+def test_a_boolean_constraint_still_works(booted, zealot_eft, no_fits_left):
+    result = search.optimize_fit(zealot_eft, "tank.ehp.total", allow={"slots": ["rig"]},
+                                 constraints=[{"stat": "capacitor.stable", "eq": False}],
+                                 top_k=1, budget={"evaluations": 30})
+    assert result["best"]
+
+
+def test_find_modifiers_minimizes_with_a_minus(booted, zealot_eft, no_fits_left):
+    key = "navigation.align_time_s"
+    result = search.find_modifiers(zealot_eft, ["-" + key], sources=["module"])
+    assert set(result["baseline"]) == {key}
+    groups = [g["group"] for g in result["groups"]]
+    nano = groups.index("Nanofiber Internal Structure")
+    assert nano < groups.index("Armor Plate")
+    assert result["groups"][nano]["best"]["delta"][key] < 0
+    assert not any("drawback" in n for n in result["groups"][nano]["notes"])
+    plates = result["groups"][groups.index("Armor Plate")]
+    assert f"drawback: raises {key}" in plates["notes"]
+    assert result["groups"][0]["delta_range"][1] < 0
+    assert 'objective="-navigation.align_time_s"' in result["next"]
+
+
+def test_marginal_swaps_names_an_invalid_baseline(booted, no_fits_left):
+    two_dcs = "[Rifter, x]\nDamage Control II\nDamage Control II\n"
+    result = search.marginal_swaps(two_dcs, "tank.ehp.total", include_empty_slots=False)
+    assert result["baseline_invalid"] == ["Damage Control II was left out: "
+                                          "cannot be fitted to this ship"]
+    assert result["reason"].startswith("the fit is invalid as given")

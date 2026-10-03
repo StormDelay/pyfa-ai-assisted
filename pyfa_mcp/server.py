@@ -165,7 +165,9 @@ def find_modifiers(fit: str, stats: list[str], sources: list[str] | None = None,
     you would not think to search for. One row per item group: best variant, a
     Tech II/Faction reference, delta range; expand=["Group"] or ["*"] lists every
     variant. Officer and Deadspace items are left out unless meta includes them
-    (meta=["all"]). stats: evaluate_fit keys (tank.ehp.total) or ship.<attribute>.
+    (meta=["all"]). stats: evaluate_fit keys (tank.ehp.total) or ship.<attribute>;
+    prefix "-" when lower is better ("-navigation.align_time_s"): it orders the
+    rows and decides what counts as a drawback (the first stat ranks).
     sources: module, rig, subsystem, charge, implant, booster, command_burst,
     phenomena, projected, environment (default all). Then call optimize_fit."""
     return search.find_modifiers(fit, stats, sources, meta, conditions, expand)

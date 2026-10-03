@@ -31,6 +31,13 @@ def _cached(key, compute):
     return value
 
 
+def _numeric(keys) -> None:
+    for key in keys:
+        if key in stats.NOT_NUMERIC:
+            raise ValueError(f"'{key}' is not always a number, so a search cannot rank or "
+                             f"compare by it; use {stats.NOT_NUMERIC[key]} instead")
+
+
 def _zero(delta, base) -> bool:
     return abs(delta) <= 1e-9 * max(1.0, abs(base))
 
@@ -148,14 +155,14 @@ def _charge_name(type_id: int) -> str:
     return eos.db.getItem(type_id).name
 
 
-def _row(c, delta, heat, baseline, replaced, problems) -> dict:
+def _row(c, delta, heat, baseline, replaced, problems, signs) -> dict:
     notes = []
     if c.active:
         notes.append("active module: measured active")
     if replaced:
         notes.append(f"its slots are full: measured replacing {replaced}")
-    notes += [f"drawback: lowers {k}" for k, d in delta.items()
-              if d < 0 and not _zero(d, baseline[k])]
+    notes += [f"drawback: {'lowers' if d < 0 else 'raises'} {k}" for k, d in delta.items()
+              if signs[k] * d < 0 and not _zero(d, baseline[k])]
     if problems:
         notes.append("on this fit: " + "; ".join(problems[:2]))
     if c.source == "command_burst":
@@ -179,13 +186,13 @@ def _reference(members: list[dict]) -> dict | None:
     return None
 
 
-def _groups(rows: list[dict], first: str) -> list[dict]:
+def _groups(rows: list[dict], first: str, sign: int) -> list[dict]:
     by: dict[tuple, list[dict]] = {}
     for r in rows:
         by.setdefault((r["group"], r["source"]), []).append(r)
     out = []
     for (group, source), members in by.items():
-        members.sort(key=lambda r: (-r["delta"][first], r["name"]))
+        members.sort(key=lambda r: (-sign * r["delta"][first], r["name"]))
         top, ref = members[0], _reference(members)
         out.append({
             "group": group, "source": source, "slot": top["slot"], "variants": len(members),
@@ -196,7 +203,7 @@ def _groups(rows: list[dict], first: str) -> list[dict]:
             "delta_range": [members[-1]["delta"][first], top["delta"][first]],
             "notes": sorted({n for r in members for n in r["notes"]
                              if not n.startswith("on this fit")})[:5]})
-    out.sort(key=lambda g: (-g["delta_range"][1], g["group"]))
+    out.sort(key=lambda g: (-sign * g["delta_range"][1], g["group"]))
     return out
 
 
@@ -218,15 +225,21 @@ def _expand(rows: list[dict], groups: list[dict], expand: list[str] | None) -> l
 def find_modifiers(fit: str, stat_keys: list[str], sources: list[str] | None = None,
                    meta: list[str] | None = None, raw_conditions: dict | None = None,
                    expand: list[str] | None = None) -> dict:
-    stat_keys = list(dict.fromkeys(stat_keys or []))
+    signs: dict[str, int] = {}
+    for text in stat_keys or []:
+        key, sign = _objective(text)
+        signs.setdefault(key, sign)
+    stat_keys = list(signs)
     if not stat_keys:
         raise ValueError("stats: name at least one stat key, e.g. tank.ehp.total "
                          "or ship.shieldCapacity")
+    _numeric(stat_keys)
     wanted = candidates.parse_sources(sources)
     ref, raw = _baseline_eft(fit), _portable(raw_conditions)
     with bench.Bench(ref, raw) as b:
         b.measure(stat_keys)  # unknown keys fail here, before any search
-        caps = {k: c for k in stat_keys if (c := stats.cap(b.fit, k)) is not None}
+        caps = {k: c for k in stat_keys
+                if signs[k] > 0 and (c := stats.cap(b.fit, k)) is not None}
         keys = stat_keys + [f"ship.{name}" for name, _ in caps.values()
                             if f"ship.{name}" not in stat_keys]
         baseline = b.measure(keys)
@@ -236,6 +249,7 @@ def find_modifiers(fit: str, stat_keys: list[str], sources: list[str] | None = N
     results = _run(ref, raw, keys, trials)
 
     first = stat_keys[0]
+    sign = signs[first]
     best: dict[int, tuple] = {}
     heat: dict[int, bench.Trial] = {}
     errors: dict[int, str] = {}
@@ -243,9 +257,11 @@ def find_modifiers(fit: str, stat_keys: list[str], sources: list[str] | None = N
         if trial.values is None:
             errors.setdefault(index, trial.error)
         elif state == "overheated":
-            if index not in heat or trial.values[first] > heat[index].values[first]:
+            if index not in heat or sign * (trial.values[first]
+                                            - heat[index].values[first]) > 0:
                 heat[index] = trial
-        elif index not in best or trial.values[first] > best[index][0].values[first]:
+        elif index not in best or sign * (trial.values[first]
+                                          - best[index][0].values[first]) > 0:
             best[index] = (trial, replaced)
 
     failed = [{"name": found.candidates[i].name, "group": found.candidates[i].group,
@@ -259,7 +275,7 @@ def find_modifiers(fit: str, stat_keys: list[str], sources: list[str] | None = N
         c = found.candidates[index]
         for member in (c, *found.duplicates.get(c.name, ())):
             rows.append(_row(member, delta, heat.get(index), baseline, replaced,
-                             trial.problems))
+                             trial.problems, signs))
 
     pinned = []
     for key, (cap_name, cap_value) in caps.items():
@@ -270,7 +286,7 @@ def find_modifiers(fit: str, stat_keys: list[str], sources: list[str] | None = N
             pinned.append({"stat": key, "cap_attribute": cap_name, "cap": cap_value,
                            "raised_by": raised})
 
-    groups = _groups(rows, first)
+    groups = _groups(rows, first, sign)
     return {
         "applied": applied,
         "baseline": {k: baseline[k] for k in stat_keys},
@@ -281,7 +297,8 @@ def find_modifiers(fit: str, stat_keys: list[str], sources: list[str] | None = N
         "coverage": {"items_scanned": found.scanned, "measured": len(trials),
                      "effects_unresolved": drift.unhandled_for(
                          [c.type_id for c in found.candidates])},
-        "next": (f"optimize_fit(fit, objective=\"{first}\") builds the best fit from these; "
+        "next": (f"optimize_fit(fit, objective=\"{'-' if sign < 0 else ''}{first}\") builds the best "
+                 "fit from these; "
                  "expand=[group names] lists every variant of a group. Candidates: "
                  f"{found.meta_note}."),
     }
@@ -368,9 +385,11 @@ def marginal_swaps(fit: str, objective: str, raw_conditions: dict | None = None,
     if top_n < 1:
         raise ValueError("top_n must be at least 1")
     key, sign = _objective(objective)
+    _numeric([key])
     ref, raw = _baseline_eft(fit), _portable(raw_conditions)
     with bench.Bench(ref, raw) as b:
         base = b.measure([key])[key]
+        base_problems = b.problems()
         found = _pool(b.fit, _LOCAL, meta)
         options = _options(found.candidates, heat=False)
         trials, labels = [], []
@@ -411,8 +430,16 @@ def marginal_swaps(fit: str, objective: str, raw_conditions: dict | None = None,
         top[0].update(new_value=value, delta=value - base, eft=confirmed["eft"])
     for r in rows:
         r.pop("_edits")
+    invalid_base = {}
+    if base_problems:
+        invalid_base = {"baseline_invalid": base_problems}
+        if not improving:
+            invalid_base["reason"] = (
+                "the fit is invalid as given (" + "; ".join(base_problems[:3]) + ") and no "
+                "single change makes it both valid and better; fix those problems first, "
+                "or let optimize_fit rebuild it")
     return {"applied": applied, "objective": objective, "baseline": base, "swaps": top,
-            "no_improvement_found": not improving, "warnings": warnings,
+            "no_improvement_found": not improving, **invalid_base, "warnings": warnings,
             "coverage": {"swaps_tried": len(trials), "invalid_dropped": invalid,
                          "failed": failed, "excluded": _excluded_rows(found.excluded)}}
 
@@ -697,6 +724,7 @@ def optimize_fit(fit: str, objective: str, raw_conditions: dict | None = None,
     started = time.monotonic()
     key, sign = _objective(objective)
     allow, cons = _allow(allow), _constraints(constraints)
+    _numeric([key, *(s for s, _, _ in cons)])
     raw = _portable(raw_conditions)
     if raw.get("module_states"):
         raise ValueError("optimize_fit chooses the modules: set heat with "
