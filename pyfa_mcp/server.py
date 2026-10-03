@@ -112,10 +112,17 @@ def search_items(query: str, category: str | None = None, meta: str | None = Non
 
 @app.tool()
 @_tool
-def list_ships(group: str | None = None, race: str | None = None) -> list:
+def list_ships(group: str | None = None, race: str | None = None,
+               can_fit: str | None = None, bonus: str | None = None) -> list:
     """Ships with slot, hardpoint and drone layouts. group: e.g. Battleship,
-    Heavy Assault Cruiser, Carrier. race: amarr, caldari, gallente, minmatar, ..."""
-    return catalog.list_ships(group, race)
+    Heavy Assault Cruiser, Carrier. race: amarr, caldari, gallente, minmatar, ...
+    can_fit: an item or item group name ("Command Burst"): only hulls that can fit
+    it (T3 cruisers need subsystems for their slots and don't match).
+    bonus: words that must all appear in one trait line ("Shield Command burst
+    strength"); rows then carry the matching `bonuses` with their value at All V,
+    sorted strongest first. Use these to find hulls rather than recalling them:
+    the game data may be newer than your training."""
+    return catalog.list_ships(group, race, can_fit, bonus)
 
 
 @app.tool()

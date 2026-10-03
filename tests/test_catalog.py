@@ -81,3 +81,18 @@ def test_limits_and_pod_slots(booted):
         "expires 2026-11-10"]
     assert catalog.item_info("Halcyon B-5 Booster")["slot"] == "booster 5"
     assert catalog.client_build()
+
+
+def test_t6_ships_by_capability(booted):
+    bursts = {s["name"] for s in catalog.list_ships(can_fit="command burst")}
+    assert {"Salvation", "Simurgh", "Gaia", "Ymir", "Nighthawk", "Ferox"} <= bursts
+    assert "Rifter" not in bursts
+    rows = catalog.list_ships(bonus="Shield Command burst strength")
+    names = [r["name"] for r in rows]
+    assert names[:2] == ["Simurgh", "Ymir"]
+    assert {"Nighthawk", "Vulture", "Chimera", "Wyvern"} <= set(names)
+    top = rows[0]["bonuses"][0]
+    assert top["at_all_v"] == 25.0 and top["per"] == "level"
+    assert "Shield Command" in top["line"]
+    with pytest.raises(catalog.CatalogError, match="can_fit"):
+        catalog.list_ships(can_fit="Comand Brust")

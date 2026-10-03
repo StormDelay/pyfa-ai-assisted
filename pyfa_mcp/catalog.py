@@ -150,7 +150,49 @@ def _ship_items():
             .all())
 
 
-def list_ships(group: str | None = None, race: str | None = None) -> list[dict]:
+def _can_fit_items(name: str) -> list:
+    """The items an item-group name stands for, or the one item named."""
+    import eos.db
+    from sqlalchemy import func
+    from eos.gamedata import Group, Item
+    from service.market import Market
+
+    items = (eos.db.gamedata_session.query(Item).join(Group)
+             .filter(Item.published == True,  # noqa: E712
+                     func.lower(Group.name) == name.strip().casefold())
+             .order_by(Item.ID).all())
+    if items:
+        return items
+    try:
+        item = Market.getInstance().getItem(name.strip())
+    except Exception:
+        item = None
+    if item is None or not item.published:
+        close = suggest(name)
+        raise CatalogError(f"can_fit: no item or item group named '{name}'"
+                           + (f" (did you mean: {', '.join(close)}?)" if close else ""))
+    return [item]
+
+
+def _bonus_lines(ship, words: list[str]) -> list[dict]:
+    """Trait lines holding every word, with the bonus at All V."""
+    text = _plain(ship.traits.display) if ship.traits is not None else ""
+    per, out = "role", []
+    for raw in text.splitlines():
+        line = raw.strip().lstrip("•").strip()
+        if line.endswith(":"):  # a section header: "... bonuses (per skill level):"
+            per = "level" if "per skill level" in line.casefold() else "role"
+            continue
+        if line and all(w in line.casefold() for w in words):
+            number = re.match(r"([\d.]+)%", line)
+            value = None if number is None else float(number.group(1)) * (
+                5 if per == "level" else 1)
+            out.append({"line": line, "per": per, "at_all_v": value})
+    return out
+
+
+def list_ships(group: str | None = None, race: str | None = None,
+               can_fit: str | None = None, bonus: str | None = None) -> list[dict]:
     ships = _ship_items()
     if group:
         groups = sorted({s.group.name for s in ships})
@@ -162,18 +204,44 @@ def list_ships(group: str | None = None, race: str | None = None) -> list[dict]:
         ships = [s for s in ships if s.group.name.casefold() == group.casefold()]
     if race:
         ships = [s for s in ships if (s.race or "").casefold() == race.casefold()]
+    if can_fit:
+        from eos.saveddata.fit import Fit
+        from eos.saveddata.ship import Ship
+        from pyfa_mcp.candidates import why_not
+
+        wanted = _can_fit_items(can_fit)
+
+        def fits(ship) -> bool:
+            try:
+                fit = Fit(Ship(ship))
+            except Exception:
+                return False
+            return any(why_not(fit, item) is None for item in wanted)
+        ships = [s for s in ships if fits(s)]
 
     def attr(item, name):
         return int(item.getAttribute(name) or 0)
 
-    return sorted(({
-        "name": s.name, "type_id": s.ID, "group": s.group.name, "race": s.race,
-        "slots": {"high": attr(s, "hiSlots"), "mid": attr(s, "medSlots"),
-                  "low": attr(s, "lowSlots"), "rig": attr(s, "rigSlots")},
-        "hardpoints": {"turret": attr(s, "turretSlotsLeft"),
-                       "launcher": attr(s, "launcherSlotsLeft")},
-        "drones": {"bandwidth": attr(s, "droneBandwidth"), "bay": attr(s, "droneCapacity")},
-    } for s in ships), key=lambda r: r["name"])
+    words = bonus.casefold().split() if bonus else []
+    rows = []
+    for s in ships:
+        row = {
+            "name": s.name, "type_id": s.ID, "group": s.group.name, "race": s.race,
+            "slots": {"high": attr(s, "hiSlots"), "mid": attr(s, "medSlots"),
+                      "low": attr(s, "lowSlots"), "rig": attr(s, "rigSlots")},
+            "hardpoints": {"turret": attr(s, "turretSlotsLeft"),
+                           "launcher": attr(s, "launcherSlotsLeft")},
+            "drones": {"bandwidth": attr(s, "droneBandwidth"), "bay": attr(s, "droneCapacity")},
+        }
+        if words:
+            row["bonuses"] = _bonus_lines(s, words)
+            if not row["bonuses"]:
+                continue
+        rows.append(row)
+    if words:
+        return sorted(rows, key=lambda r: (-max(b["at_all_v"] or 0.0 for b in r["bonuses"]),
+                                           r["name"]))
+    return sorted(rows, key=lambda r: r["name"])
 
 
 def _plain(html: str | None) -> str:
