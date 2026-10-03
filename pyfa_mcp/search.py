@@ -317,9 +317,9 @@ def find_modifiers(fit: str, stat_keys: list[str], sources: list[str] | None = N
         "coverage": {"items_scanned": found.scanned, "measured": len(trials),
                      "effects_unresolved": drift.unhandled_for(
                          [c.type_id for c in found.candidates])},
-        "next": (f"optimize_fit(fit, objective=\"{'-' if sign < 0 else ''}{first}\") builds the best "
-                 "fit from these; "
-                 "expand=[group names] lists every variant of a group. Candidates: "
+        "next": (f"optimize_fit(fit, objective=\"{'-' if sign < 0 else ''}{first}\") "
+                 "builds the best fit from these; expand=[group names] lists every variant "
+                 "of a group. Candidates: "
                  f"{found.meta_note}."),
     }
 

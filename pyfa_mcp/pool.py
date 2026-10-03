@@ -130,7 +130,8 @@ def _sweep() -> None:
     """Remove what servers that are gone left behind (their workers died with them)."""
     base = eosboot.booted_dir() / "workers"
     for server in base.iterdir() if base.is_dir() else ():
-        if server.name.isdigit() and int(server.name) != os.getpid()                 and not _alive(int(server.name)):
+        pid = int(server.name) if server.name.isdigit() else None
+        if pid is not None and pid != os.getpid() and not _alive(pid):
             shutil.rmtree(server, ignore_errors=True)
 
 
