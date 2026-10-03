@@ -17,8 +17,8 @@ from pathlib import Path
 from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 
-from pyfa_mcp import (catalog, conditions, drift, eft, eosboot, evaluate, graphs, pyfadata,
-                      register, store)
+from pyfa_mcp import (catalog, conditions, drift, eft, eosboot, evaluate, graphs, pool,
+                      pyfadata, register, search, store)
 
 INSTRUCTIONS = """\
 pyfa-mcp computes EVE Online fits with Pyfa's own engine.
@@ -38,6 +38,16 @@ pyfa-mcp computes EVE Online fits with Pyfa's own engine.
 - Call status() if numbers look wrong; relay any warning it reports.
 - export_to_pyfa writes into the user's own Pyfa. Call it only when the
   user explicitly asks for that; otherwise give them the EFT text.
+- For a best / max / min / optimal fit, or "what affects X": call
+  find_modifiers (everything that can move the stat: every slot, implant,
+  booster, burst, phenomena and environment), then optimize_fit (searches
+  whole fits); audit a hand-built fit with marginal_swaps. Never choose
+  candidates from memory or search_items alone.
+- Those three leave Officer and Deadspace items out unless meta includes
+  them (meta=["all"]); tell the user which you used.
+- Walk conditions_format()["beyond_the_fit"] (pod, drugs, links, phenomena,
+  projected, environment, heat, mode) and tell the user which of those you
+  assumed, set, or left out.
 """
 
 app = MCPServer("pyfa", instructions=INSTRUCTIONS)
@@ -48,7 +58,7 @@ _boot_error: str | None = None
 _booted = False
 
 _USER_ERRORS = (eft.EftError, conditions.ConditionsError, store.StoreError,
-                catalog.CatalogError, graphs.GraphError, pyfadata.PyfaDataError, ValueError)
+                catalog.CatalogError, graphs.GraphError, pyfadata.PyfaDataError, pool.PoolError, ValueError)
 
 
 def _ensure_booted() -> None:
@@ -92,7 +102,9 @@ def search_items(query: str, category: str | None = None, meta: str | None = Non
                  limit: int = 25) -> list:
     """Find items by name. category: e.g. Module, Drone, Charge, Ship, Implant.
     meta: Tech I, Tech II, Faction, Deadspace, Officer, Storyline, ... Returns
-    name, group, category, meta, slot (high/mid/low/rig/subsystem), cpu, powergrid."""
+    name, group, category, meta, slot (high/mid/low/rig/subsystem), cpu, powergrid.
+    Matches names only. To find items by what they do (e.g. everything that adds
+    shield HP), use find_modifiers."""
     return catalog.search_items(query, category, meta, limit)
 
 
@@ -120,7 +132,8 @@ def evaluate_fit(fit: str, conditions: dict | None = None) -> dict:
     validity (cpu/pg/calibration/slots/hardpoints), tank (hp, ehp, resists,
     repair), offense (dps/volley), capacitor, navigation, targeting, drones,
     plus `applied` and `warnings`. Modules that do not fit are left out and
-    listed as validity problems."""
+    listed as validity problems.
+    To check whether a fit can be improved, use marginal_swaps."""
     return evaluate.evaluate(fit, conditions)
 
 
@@ -131,8 +144,72 @@ def compare_fits(fits: list[str], conditions: dict | None = None,
     """Evaluate many fits under the same conditions into one table. `stats` picks
     columns by dotted key from evaluate_fit's output (e.g. "tank.ehp.total",
     "offense.dps.total", "targeting.lock_range_m"); omitted = a standard set.
-    A fit that fails gets an `error` in its row; the others still compute."""
+    A fit that fails gets an `error` in its row; the others still compute.
+    To check whether a fit can be improved, use marginal_swaps."""
     return evaluate.compare(fits, conditions, stats)
+
+
+# --- search ------------------------------------------------------------------
+
+@app.tool()
+@_tool
+def find_modifiers(fit: str, stats: list[str], sources: list[str] | None = None,
+                   meta: list[str] | None = None, conditions: dict | None = None,
+                   expand: list[str] | None = None) -> dict:
+    """What can change a stat on this hull. Use it before saying what is best or
+    max/min/optimal, and whenever the user asks what affects or what else could
+    raise or lower a stat (EHP, DPS, lock range, align...). Measures every legal
+    module, rig, subsystem, charge/script, implant and implant set, booster,
+    command burst, phenomena generator, projected module and environment effect
+    on `fit` (hull name, EFT or stored fit) under `conditions`, so it finds what
+    you would not think to search for. One row per item group: best variant, a
+    Tech II/Faction reference, delta range; expand=["Group"] or ["*"] lists every
+    variant. Officer and Deadspace items are left out unless meta includes them
+    (meta=["all"]). stats: evaluate_fit keys (tank.ehp.total) or ship.<attribute>;
+    prefix "-" when lower is better ("-navigation.align_time_s"): it orders the
+    rows and decides what counts as a drawback (the first stat ranks).
+    sources: module, rig, subsystem, charge, implant, booster, command_burst,
+    phenomena, projected, environment (default all). Then call optimize_fit."""
+    return search.find_modifiers(fit, stats, sources, meta, conditions, expand)
+
+
+@app.tool()
+@_tool
+def marginal_swaps(fit: str, objective: str, conditions: dict | None = None,
+                   meta: list[str] | None = None, include_empty_slots: bool = True,
+                   top_n: int = 10) -> dict:
+    """Is there any single change that makes this fit better? Use it to audit a
+    hand-built fit before recommending it as the best or max for a stat. Tries
+    every module, rig, charge, implant and booster that fits each slot, every
+    empty slot and every removal; returns the valid ones sorted by gain
+    (objective: a stat key; prefix "-" to minimize, e.g. "-navigation.align_time_s").
+    The top swap is confirmed with evaluate_fit. Officer and Deadspace items are
+    left out unless meta includes them (meta=["all"])."""
+    return search.marginal_swaps(fit, objective, conditions, meta, include_empty_slots,
+                                 top_n)
+
+
+@app.tool()
+@_tool
+def optimize_fit(fit: str, objective: str, conditions: dict | None = None,
+                 allow: dict | None = None, meta: list[str] | None = None,
+                 locked: str | None = None, constraints: list[dict] | None = None,
+                 top_k: int = 5, budget: dict | None = None) -> dict:
+    """Search for the best fit for a stat. Use it whenever the user asks for the
+    best, highest, max, min-max or optimal fit, or before recommending a module
+    choice. It builds its candidates from every item that affects the stat, so it
+    won't miss modules you didn't think of. fit: hull name or EFT (a start
+    point). objective: stat key, "-" prefix to minimize. allow: {slots: [high,
+    mid, low, rig], implants: bool, boosters: bool, module_states: [active,
+    overheated]} (default: all racks, no implants/boosters, no overheat).
+    locked: EFT lines that must stay. constraints: [{"stat", "eq"|"lte"|"gte":
+    value}]. budget: {evaluations, seconds} (default 20000, 60). Officer and
+    Deadspace items are left out unless meta includes them (meta=["all"]).
+    Command bursts, phenomena, projected and environment stay as conditions set
+    them. Every returned fit is computed by evaluate_fit; `search.converged`
+    says whether the search finished inside the budget."""
+    return search.optimize_fit(fit, objective, conditions, allow, meta, locked,
+                               constraints, top_k, budget)
 
 
 @app.tool()
@@ -174,6 +251,7 @@ def status() -> dict:
     return {"pyfa_version": eosboot.pyfa_version(),
             "game_client_build": meta.get("client_build"),
             "data_dir": str(eosboot.boot(_data_dir)),
+            "search_workers": pool.describe(),
             **drift.report()}
 
 
@@ -225,6 +303,9 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--pyfa-dir", type=Path, default=None,
                         help="the user's Pyfa data dir (default ~/.pyfa); read, and "
                              "written only by export_to_pyfa")
+    parser.add_argument("--workers", type=int, default=None,
+                        help="processes for find_modifiers/optimize_fit/marginal_swaps "
+                             "(default: cores - 2, at most 12; 0 = none)")
     setup = parser.add_mutually_exclusive_group()
     setup.add_argument("--register", metavar="CLIENT",
                        help="add pyfa-mcp to an MCP client's config: "
@@ -238,4 +319,5 @@ def main(argv: list[str] | None = None) -> None:
         sys.exit(register.run(args.register, args.unregister, args.print_config))
     _data_dir = args.data_dir
     pyfadata.set_dir(args.pyfa_dir)
+    pool.configure(args.workers)
     app.run()  # stdio

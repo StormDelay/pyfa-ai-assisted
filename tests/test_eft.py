@@ -123,3 +123,37 @@ def test_second_implant_in_a_slot_is_recorded(booted, no_fits_left):
         assert "slot" in fit.dropped_modules[0].reason
     finally:
         _delete(fit)
+
+
+def test_unfittable_item_line_is_an_error(booted, no_fits_left):
+    with pytest.raises(eft.EftError, match="'Capital Armor Plates' is a commodity"):
+        eft.import_fit("[Wyvern, x]\nCapital Armor Plates\n", temp=True)
+
+
+def test_unfittable_item_with_a_count_is_cargo(booted, no_fits_left):
+    from service.fit import Fit
+    fit = eft.import_fit("[Rifter, x]\n\n\n\n\nCapital Armor Plates x3\n", temp=True)
+    try:
+        assert [c.item.name for c in fit.cargo] == ["Capital Armor Plates"]
+    finally:
+        Fit.deleteFit(fit.ID)
+
+
+MUTATED = ("[Drake, m]\n\n"
+           "Large Shield Extender II [1]\n\n\n\n"
+           "Hammerhead II x2 [2]\n\n"
+           "[1] Large Shield Extender II\n"
+           "  Unstable Large Shield Extender Mutaplasmid\n"
+           "  capacityBonus 2900.0, cpu 45.0, power 160.0, signatureRadiusAdd 20.0\n"
+           "[2] Hammerhead II\n"
+           "  Exigent Medium Drone Firepower Mutaplasmid\n"
+           "  damageMultiplier 2.2\n")  # as Pyfa's export writes them
+PLAIN = "[Drake, m]\n\nLarge Shield Extender II\n\n\n\nHammerhead II x2\n"
+
+
+def test_mutated_items_in_pyfa_export_format_import(booted, no_fits_left):
+    from pyfa_mcp import evaluate
+    mutated, plain = evaluate.evaluate(MUTATED, None), evaluate.evaluate(PLAIN, None)
+    assert mutated["validity"]["valid"] is True
+    assert mutated["tank"]["hp"]["shield"] > plain["tank"]["hp"]["shield"]
+    assert mutated["offense"]["drone_dps"] > plain["offense"]["drone_dps"]

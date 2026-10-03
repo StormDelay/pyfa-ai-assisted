@@ -1,6 +1,8 @@
 """A calculated eos fit as plain data, under one spool setting."""
 from __future__ import annotations
 
+import difflib
+
 _LAYERS = {"shield": "shield", "armor": "armor", "hull": ""}
 _TYPES = ("em", "thermal", "kinetic", "explosive")
 
@@ -167,16 +169,27 @@ def _drones(fit) -> dict:
     }
 
 
+_SECTIONS = {
+    "validity": lambda fit, spool: _validity(fit),
+    "tank": lambda fit, spool: _tank(fit),
+    "offense": _offense,
+    "capacitor": lambda fit, spool: _capacitor(fit),
+    "navigation": lambda fit, spool: _navigation(fit),
+    "targeting": lambda fit, spool: _targeting(fit),
+    "drones": lambda fit, spool: _drones(fit),
+}
+# Stats that are not always a number, and what a search can use instead.
+NOT_NUMERIC = {"capacitor.stable_at_percent": "capacitor.delta_per_s",
+               "capacitor.lasts_s": "capacitor.delta_per_s",
+               "validity.problems": "validity.valid"}
+# Stats that are one ship attribute, so a dogma cap on it caps the stat.
+_STAT_ATTRS = {"targeting.lock_range_m": "maxTargetRange",
+               "targeting.scan_resolution_mm": "scanResolution",
+               "navigation.signature_m": "signatureRadius"}
+
+
 def fit_stats(fit, spool: float) -> dict:
-    return {
-        "validity": _validity(fit),
-        "tank": _tank(fit),
-        "offense": _offense(fit, spool),
-        "capacitor": _capacitor(fit),
-        "navigation": _navigation(fit),
-        "targeting": _targeting(fit),
-        "drones": _drones(fit),
-    }
+    return {name: section(fit, spool) for name, section in _SECTIONS.items()}
 
 
 def flatten(d: dict, prefix: str = "") -> dict:
@@ -188,3 +201,45 @@ def flatten(d: dict, prefix: str = "") -> dict:
         else:
             out[path] = value
     return out
+
+
+def _attribute(name):
+    import eos.db
+    return eos.db.getAttributeInfo(name)
+
+
+def read(fit, keys: list[str], spool: float) -> dict:
+    """The asked stats only: a section is computed if a key names it (so the
+    cap sim runs only for capacitor.* keys). `ship.<attribute>` reads the
+    ship's modified dogma attribute."""
+    flat: dict = {}
+    for section in dict.fromkeys(k.split(".", 1)[0] for k in keys if not k.startswith("ship.")):
+        if section in _SECTIONS:
+            flat.update(flatten({section: _SECTIONS[section](fit, spool)}))
+    out = {}
+    for key in keys:
+        if key.startswith("ship."):
+            name = key[len("ship."):]
+            if _attribute(name) is None:
+                raise ValueError(f"unknown ship attribute '{name}' in '{key}'")
+            out[key] = fit.ship.getModifiedItemAttr(name)
+        elif key in flat:
+            out[key] = flat[key]
+        else:
+            known = flatten(fit_stats(fit, spool))  # only on this error path: runs the cap sim
+            close = difflib.get_close_matches(key, list(known), n=3, cutoff=0.6)
+            hint = f" (did you mean: {', '.join(close)}?)" if close else ""
+            raise ValueError(f"unknown stat '{key}'{hint}; stat keys look like "
+                             f"{', '.join(DEFAULT_COMPARE[:3])}, or ship.<attribute>")
+    return out
+
+
+def cap(fit, key: str) -> tuple[str, float] | None:
+    """(capping attribute, its current value) when `key` is one ship attribute
+    that dogma caps (lock range is capped by maximumRangeCap), else None."""
+    name = key[len("ship."):] if key.startswith("ship.") else _STAT_ATTRS.get(key)
+    info = _attribute(name) if name else None
+    if info is None or not info.maxAttributeID:
+        return None
+    capping = _attribute(info.maxAttributeID)
+    return capping.name, fit.ship.getModifiedItemAttr(capping.name)

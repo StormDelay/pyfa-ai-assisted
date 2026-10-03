@@ -93,6 +93,12 @@ def boot(data_dir: Path | None = None) -> Path:
     return data_dir
 
 
+def booted_dir() -> Path:
+    if _booted_dir is None:
+        raise BootError("eos is not booted")
+    return _booted_dir
+
+
 def _check_engine(save_db: Path) -> None:
     import eos.db
 

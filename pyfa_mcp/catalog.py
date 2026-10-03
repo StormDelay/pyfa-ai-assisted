@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import difflib
+import functools
 import re
 
 from pyfa_mcp.eft import suggest
@@ -13,6 +14,37 @@ _SLOT_EFFECTS = {"hiPower": "high", "medPower": "mid", "loPower": "low",
 class CatalogError(LookupError):
     def __str__(self):
         return str(self.args[0]) if self.args else ""
+
+
+@functools.cache
+def _group_items(gid: int) -> tuple:
+    """A group's items with their attributes loaded in two queries, not one per charge."""
+    from sqlalchemy.orm import selectinload
+    from eos.db import get_gamedata_session
+    from eos.gamedata import Group, Item
+
+    group = (get_gamedata_session().query(Group).options(
+        selectinload(Group.items).selectinload(Item._Item__attributes)).filter(Group.ID == gid).first())
+    return tuple(group.items) if group else ()
+
+
+def valid_charges(item) -> list:
+    """Published charges `item` takes, sorted by ID.
+
+    Module.getValidCharges breaks here: eos.db.getGroup shares a cache keyed by id alone
+    (vendor/Pyfa/eos/db/gamedata/queries.py cachedQuery), so a group id equal to an
+    already-fetched item id returns that Item, which has no `.items`.
+    """
+    from eos.saveddata.module import Module
+
+    mod = Module(item)
+    out = {}
+    for i in range(5):
+        gid = mod.getModifiedItemAttr(f"chargeGroup{i}", None)
+        for c in _group_items(int(gid)) if gid else ():
+            if c.published and mod.isValidCharge(c):
+                out[c.ID] = c
+    return sorted(out.values(), key=lambda c: c.ID)
 
 
 def _meta(item) -> str:
@@ -32,6 +64,19 @@ def _row(item) -> dict:
         "category": item.category.name, "meta": _meta(item), "slot": _slot(item),
         "cpu": item.getAttribute("cpu"), "powergrid": item.getAttribute("power"),
     }
+
+
+def published_items(categories=(), groups=()) -> list:
+    import eos.db
+    from eos.gamedata import Category, Group, Item
+
+    query = (eos.db.gamedata_session.query(Item).join(Group).join(Category)
+             .filter(Item.published == True))  # noqa: E712
+    if categories:
+        query = query.filter(Category.name.in_(categories))
+    if groups:
+        query = query.filter(Group.name.in_(groups))
+    return query.order_by(Item.ID).all()
 
 
 def search_items(query: str, category: str | None = None, meta: str | None = None,

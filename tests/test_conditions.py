@@ -322,3 +322,40 @@ def test_unreadable_user_profiles_do_not_break_conditions(pyfa_home):
     assert "your_profiles_error" in C.describe()
     with pytest.raises(C.ConditionsError, match="unknown damage profile 'Home EMM'.*could not"):
         C.damage_pattern(C.parse({"damage_profile": "Home EMM"}))
+
+
+from pyfa_mcp import conditions, evaluate
+
+WYVERN = "[Wyvern, env]\n"
+
+
+def test_environment_changes_the_numbers_and_is_echoed(booted, no_fits_left):
+    plain = evaluate.evaluate(WYVERN, None)
+    pulsar = evaluate.evaluate(WYVERN, {"environment": "Class 6 Pulsar Effects"})
+    assert pulsar["tank"]["hp"]["shield"] > plain["tank"]["hp"]["shield"]
+    assert pulsar["applied"]["environment"] == "Class 6 Pulsar Effects"
+    assert plain["applied"]["environment"] == "none (default)"
+
+
+def test_environment_errors(booted, no_fits_left):
+    with pytest.raises(conditions.ConditionsError, match="did you mean"):
+        evaluate.evaluate(WYVERN, {"environment": "Class 6 Pulsar Efects"})
+    with pytest.raises(conditions.ConditionsError, match="not a system effect"):
+        evaluate.evaluate(WYVERN, {"environment": "Damage Control II"})
+    with pytest.raises(conditions.ConditionsError, match="set it with environment"):
+        evaluate.evaluate(WYVERN, {"projected": [{"item": "Class 6 Pulsar Effects"}]})
+
+
+def test_beyond_the_fit_lists_every_category(booted):
+    beyond = conditions.describe()["beyond_the_fit"]
+    assert set(beyond) == {"pod", "drugs", "links", "phenomena", "projected", "environment",
+                           "heat", "mode_spool", "skills_damage_target", "drones_fighters"}
+    assert all(set(entry) == {"how", "options"} for entry in beyond.values())
+    assert "Nirvana" in beyond["pod"]["options"]["sets"]
+    assert "Shield Extension Charge" in beyond["links"]["options"]["Shield Command Burst II"]
+    assert "Caldari Phenomena Generator" in beyond["phenomena"]["options"]
+    assert "Stasis Web" in beyond["projected"]["options"]
+    assert any("Class 6 Pulsar Effects" in names
+               for names in beyond["environment"]["options"].values())
+    assert beyond["drugs"]["options"]
+    assert "in_eft_instead" not in conditions.describe()

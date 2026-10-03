@@ -2,8 +2,8 @@
 
     python packaging/mcp_smoke.py COMMAND [ARGS...]
 
-initialize, tools/list, then evaluate_fit, status, fit_graph and
-conditions_format. Exits non-zero on anything unexpected; a stray print on
+initialize, tools/list, then evaluate_fit, status, fit_graph,
+conditions_format and find_modifiers (worker processes). Exits non-zero on anything unexpected; a stray print on
 the server's stdout fails json.loads. Pass --data-dir / --pyfa-dir through to
 keep it off the user's own data.
 """
@@ -16,7 +16,8 @@ import sys
 
 TOOLS = {"search_items", "list_ships", "item_info", "evaluate_fit", "compare_fits",
          "fit_graph", "graph_options", "conditions_format", "status", "save_fit",
-         "list_fits", "get_fit", "delete_fit", "export_to_pyfa"}
+         "list_fits", "get_fit", "delete_fit", "export_to_pyfa", "find_modifiers",
+         "marginal_swaps", "optimize_fit"}
 FIT = "[Rifter, smoke]\n200mm AutoCannon II, EMP S\n"
 # One call per subsystem a frozen build could miss an import for: eos (evaluate),
 # drift (status), graphs, conditions.
@@ -26,6 +27,8 @@ CALLS = (
     ("fit_graph", {"fit": FIT, "graph": "lock_time", "x": "tgtSigRad", "y": "time",
                    "x_range": [10, 1000]}),
     ("conditions_format", {}),
+    # >300 trials, so it runs through worker processes when the server has them
+    ("find_modifiers", {"fit": "Rifter", "stats": ["tank.ehp.total"], "sources": ["module"]}),
 )
 
 
