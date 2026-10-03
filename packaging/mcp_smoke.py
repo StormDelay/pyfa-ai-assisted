@@ -14,7 +14,7 @@ import json
 import subprocess
 import sys
 
-TOOLS = {"search_items", "list_ships", "item_info", "evaluate_fit", "compare_fits",
+TOOLS = {"search_items", "list_ships", "item_info", "whats_new", "evaluate_fit", "compare_fits",
          "fit_graph", "graph_options", "conditions_format", "status", "save_fit",
          "list_fits", "get_fit", "delete_fit", "export_to_pyfa", "find_modifiers",
          "marginal_swaps", "optimize_fit"}

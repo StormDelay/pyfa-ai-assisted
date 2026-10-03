@@ -268,3 +268,23 @@ def item_info(name: str) -> dict:
         "traits": _plain(item.traits.display) if item.traits is not None else "",
         "attributes": {attr_name: attr.value for attr_name, attr in item.attributes.items()},
     }
+
+
+_NEW_CATEGORIES = ("Ship", "Module", "Implant", "Charge", "Drone", "Fighter", "Subsystem")
+
+
+def whats_new(category: str | None = None, limit: int = 30) -> dict:
+    if limit < 1:
+        raise CatalogError("limit must be at least 1")
+    categories = _NEW_CATEGORIES
+    if category:
+        categories = tuple(c for c in _NEW_CATEGORIES if c.casefold() == category.casefold())
+        if not categories:
+            raise CatalogError(f"unknown category '{category}'; one of "
+                               + ", ".join(_NEW_CATEGORIES))
+    items = published_items(categories=categories)[::-1][:limit]
+    keep = ("name", "type_id", "group", "category", "limits")
+    return {"ordered_by": "type ID: the game data carries no dates; higher IDs were "
+                          "added later",
+            "game_client_build": client_build(),
+            "items": [{k: v for k, v in _row(i).items() if k in keep} for i in items]}

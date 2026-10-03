@@ -44,7 +44,14 @@ pyfa-mcp computes EVE Online fits with Pyfa's own engine.
   whole fits); audit a hand-built fit with marginal_swaps. Never choose
   candidates from memory or search_items alone.
 - Those three leave Officer and Deadspace items out unless meta includes
-  them (meta=["all"]); tell the user which you used.
+  them (meta=["all"]), and Serenity-only, character-age-limited and
+  expiring items unless availability="all"; tell the user which you used.
+- For a best/max/min fit, set optimize_fit's allow.command and
+  allow.phenomena unless the user fixed the fleet: it then picks the bursts
+  and phenomena from the game data.
+- The game data may be newer than your training. Find ships and items
+  with the tools (list_ships can_fit/bonus, find_modifiers, whats_new),
+  never from memory.
 - Walk conditions_format()["beyond_the_fit"] (pod, drugs, links, phenomena,
   projected, environment, heat, mode) and tell the user which of those you
   assumed, set, or left out.
@@ -130,6 +137,16 @@ def list_ships(group: str | None = None, race: str | None = None,
 def item_info(name: str) -> dict:
     """All attributes and the trait/bonus text of one item (ship, module, charge...)."""
     return catalog.item_info(name)
+
+
+@app.tool()
+@_tool
+def whats_new(category: str | None = None, limit: int = 30) -> dict:
+    """The newest items in the game data, newest first: ships, modules, implants,
+    charges, drones, fighters, subsystems (category picks one). The data has no
+    dates, so this orders by type ID (higher = added later). Use it when an answer
+    depends on what exists: the game data may be newer than your training."""
+    return catalog.whats_new(category, limit)
 
 
 # --- evaluation --------------------------------------------------------------
