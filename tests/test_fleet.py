@@ -1,6 +1,6 @@
 import json
 
-from pyfa_mcp import catalog, eosboot, evaluate, fleet
+from pyfa_mcp import evaluate, fleet
 
 
 def _measured(hull: str) -> float:
@@ -35,9 +35,16 @@ def test_by_charge_and_booster_fits(booted, no_fits_left):
 
 
 def test_a_damaged_table_file_is_rebuilt(booted, no_fits_left):
-    path = eosboot.booted_dir() / f"burst_sources-{catalog.client_build()}.json"
+    path = fleet._path()
     fleet.table()
     path.write_text("{not json", encoding="utf-8")
     fleet.table.cache_clear()
     assert fleet.table()["modules"]["Shield Command Burst II"]
     assert json.loads(path.read_text(encoding="utf-8"))["modules"]
+
+
+def test_a_table_file_of_another_shape_is_rebuilt(booted, no_fits_left):
+    fleet.table()
+    fleet._path().write_text('{"hulls": {}}', encoding="utf-8")
+    fleet.table.cache_clear()
+    assert fleet.table()["modules"]["Shield Command Burst II"]

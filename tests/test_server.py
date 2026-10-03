@@ -84,6 +84,7 @@ def test_search_tools_and_redirects(booted, no_fits_left):
     assert "never from memory" in server.INSTRUCTIONS
     assert "allow.command" in server.INSTRUCTIONS and 'availability="all"' in server.INSTRUCTIONS
     assert server.whats_new(category="Ship", limit=3)["items"]
+    assert '"evaluations": 400000' in server.INSTRUCTIONS
 
 
 def test_search_input_errors(booted):

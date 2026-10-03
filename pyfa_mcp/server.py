@@ -48,7 +48,10 @@ pyfa-mcp computes EVE Online fits with Pyfa's own engine.
   expiring items unless availability="all"; tell the user which you used.
 - For a best/max/min fit, set optimize_fit's allow.command and
   allow.phenomena unless the user fixed the fleet: it then picks the bursts
-  and phenomena from the game data.
+  and phenomena from the game data. A whole fit (implants, boosters, heat
+  and fleet) needs more than the default budget: pass budget=
+  {"evaluations": 400000, "seconds": 300}, and if search.converged is
+  still false, say so and offer to search longer.
 - The game data may be newer than your training. Find ships and items
   with the tools (list_ships can_fit/bonus, find_modifiers, whats_new),
   never from memory.

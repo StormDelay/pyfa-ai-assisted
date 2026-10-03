@@ -890,6 +890,24 @@ def _under(search, raw) -> "_Search":
     return other
 
 
+def _improve_under(search, raw, start, sets) -> tuple:
+    """Improve `start` again under other conditions. The start is measured first,
+    so a budget running out still leaves it ranked. Returns (search, finished)."""
+    other = _under(search, raw)
+    try:
+        other.evaluate([start])
+        other.improve([start], sets)
+    except _OutOfBudget:
+        return other, False
+    return other, True
+
+
+def _ordered(best: list[dict], sign: int) -> list[dict]:
+    """Valid fits first, then by the confirmed objective: fits were ranked on the
+    bench, possibly under another fleet than the one they are confirmed with."""
+    return sorted(best, key=lambda b: (not b["valid"], -sign * b["objective_value"]))
+
+
 _NEAR_WINNERS = 20
 
 
@@ -915,8 +933,12 @@ def _pruned_summary(pruned: dict, info: dict, best_eft: str | None) -> dict:
 def _diff(first: dict, other: dict) -> dict:
     a, b = (Counter(line for line in fit["eft"].splitlines()[1:] if line.strip())
             for fit in (first, other))
+    diff = {"remove": sorted((a - b).elements()), "add": sorted((b - a).elements())}
+    states = other.get("conditions", {}).get("module_states", [])
+    if states != first.get("conditions", {}).get("module_states", []):
+        diff["module_states"] = states  # EFT has no heat: states tell such fits apart
     return {"objective_value": other["objective_value"], "valid": other["valid"],
-            "diff": {"remove": sorted((a - b).elements()), "add": sorted((b - a).elements())}}
+            "diff": diff}
 
 
 def optimize_fit(fit: str, objective: str, raw_conditions: dict | None = None,
@@ -995,7 +1017,7 @@ def optimize_fit(fit: str, objective: str, raw_conditions: dict | None = None,
     considered = polish_options = options  # until pruning has run
     converged = True
     searches = [search]
-    fleet_command, fleet_out = [], None
+    fleet_command, fleet_out, searched_under = [], None, False
     try:
         try:
             clean = {w: None for w in places}
@@ -1042,17 +1064,19 @@ def optimize_fit(fit: str, objective: str, raw_conditions: dict | None = None,
             fleet_command, _ = _fleet(ref, raw, search.keys, key, sign,
                                       search.edits(ranked[0][1]), allow, ok)
             if converged:  # improve the fit under that fleet
-                search = _under(search, bench.merge_conditions(raw, {"command": fleet_command}))
-                searches.append(search)
-                try:
-                    search.improve([ranked[0][1]], sets)
-                except _OutOfBudget:
-                    converged = False
+                under, converged = _improve_under(
+                    search, bench.merge_conditions(raw, {"command": fleet_command}),
+                    ranked[0][1], sets)
+                searches.append(under)
+                searched_under = True
+                search = under
         polish = _polish(search, polish_options, budget, started)
+        converged = converged and polish["converged"]
         ranked = _ranked(search)
         if wants_fleet and ranked:  # the fleet for the fit as polished
             fleet_command, fleet_out = _fleet(ref, raw, search.keys, key, sign,
                                               search.edits(ranked[0][1]), allow, ok)
+            fleet_out["searched_under"] = searched_under
     finally:
         for each in searches:
             each.stack.close()
@@ -1072,7 +1096,8 @@ def optimize_fit(fit: str, objective: str, raw_conditions: dict | None = None,
                      conditions=confirmed["conditions"])
         best.append(entry)
     if best:
-        best[0]["polish"] = polish
+        best[0]["polish"] = polish  # the pass ran from the top-ranked fit
+        best = _ordered(best, sign)
     out = {"applied": applied,
            "best": best if verbose or not best else best[:1] + [_diff(best[0], b)
                                                               for b in best[1:]]}

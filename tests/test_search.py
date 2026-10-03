@@ -553,6 +553,7 @@ def test_t9_the_optimizer_picks_the_fleet(booted, no_fits_left):
     assert _ehp(best["eft"], best["conditions"]) == pytest.approx(best["objective_value"],
                                                                  rel=1e-12)
     assert result["applied"]["command"].startswith("chosen by the search")
+    assert chosen["searched_under"] is True
 
 
 def test_t10_a_searched_fleet_refuses_a_given_one(booted, zealot_eft):
@@ -589,3 +590,58 @@ def test_replay_the_hand_tested_wyvern(booted, no_fits_left):
     swaps = search.marginal_swaps(best["eft"], "tank.ehp.total", best["conditions"],
                                   meta=["all"])
     assert swaps["no_improvement_found"] is True
+
+
+def test_a_search_under_a_fleet_measures_its_start_first(monkeypatch):
+    from pyfa_mcp.bench import Trial
+    where = ("module", 0)
+    a = search.Option("low", 1, None, "active", "A", "g")
+    b = search.Option("low", 2, None, "active", "B", "g")
+    values = {"k": 1.0, **{x: 0.0 for x in search._FITTING_KEYS}}
+    monkeypatch.setattr(search._Search, "_trials",
+                        lambda self, edits: [Trial(dict(values), []) for _ in edits])
+    main = search._Search("ref", {}, "k", 1, [], {"evaluations": 1}, float("inf"),
+                          [where], {where: "low"}, {"low": [a, b]})
+    under, finished = search._improve_under(main, {"command": []}, {where: a}, [])
+    assert finished is False  # one evaluation: the start, then the budget is gone
+    assert under.canonical({where: a}) in under.seen
+
+
+def test_best_is_ordered_by_its_confirmed_value():
+    best = [{"objective_value": 1.0, "valid": True}, {"objective_value": 3.0, "valid": True},
+            {"objective_value": 9.0, "valid": False}]
+    assert [b["objective_value"] for b in search._ordered(best, 1)] == [3.0, 1.0, 9.0]
+    assert [b["objective_value"] for b in search._ordered(best, -1)] == [1.0, 3.0, 9.0]
+
+
+def test_compact_diff_shows_heat_differences():
+    eft_text = "[Rifter, x]\nArmor EM Hardener II\n"
+    hot = {"eft": eft_text, "objective_value": 2.0, "valid": True,
+           "conditions": {"module_states": [{"module": "Armor EM Hardener II",
+                                             "state": "overheated", "count": 1}]}}
+    cold = {"eft": eft_text, "objective_value": 1.0, "valid": True, "conditions": {}}
+    diff = search._diff(hot, cold)["diff"]
+    assert diff["remove"] == [] and diff["add"] == []
+    assert diff["module_states"] == []
+    assert "module_states" not in search._diff(hot, hot)["diff"]
+
+
+def test_converged_counts_the_polish(booted, zealot_eft, no_fits_left, monkeypatch):
+    real = search._polish
+
+    def starved(s, options, budget, started):
+        out = real(s, options, budget, started)
+        s.stopped_by = "evaluations"
+        return {**out, "converged": False}
+
+    monkeypatch.setattr(search, "_polish", starved)
+    result = search.optimize_fit(zealot_eft, "tank.ehp.total", allow={"slots": ["low"]},
+                                 top_k=1)
+    assert result["search"]["converged"] is False
+    assert "budget.evaluations" in result["search"]["note"]
+
+
+def test_fleet_says_whether_the_fit_was_searched_under_it(booted, zealot_eft, no_fits_left):
+    short = search.optimize_fit(zealot_eft, "tank.ehp.total", allow={"command": True},
+                                top_k=1, budget={"evaluations": 50})
+    assert short["fleet"]["searched_under"] is False

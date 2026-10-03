@@ -123,14 +123,23 @@ def _build() -> dict:
             "mindlinks": mindlinks, "modules": modules}
 
 
+_SCHEMA = 1  # bump when the table's shape changes: older files are then ignored
+
+
+def _path():
+    from pyfa_mcp import eosboot
+    return eosboot.booted_dir() / f"burst_sources-v{_SCHEMA}-{catalog.client_build()}.json"
+
+
 @functools.cache
 def table() -> dict:
-    from pyfa_mcp import eosboot
-    path = eosboot.booted_dir() / f"burst_sources-{catalog.client_build()}.json"
+    path = _path()
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        pass
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if all(isinstance(data.get(k), dict) for k in ("hulls", "mindlinks", "modules")):
+            return data
+    except (OSError, ValueError, AttributeError):
+        pass  # missing, damaged or another shape: built again
     data = _build()
     try:
         path.write_text(json.dumps(data), encoding="utf-8")
