@@ -489,7 +489,7 @@ def marginal_swaps(fit: str, objective: str, raw_conditions: dict | None = None,
 # --- optimize_fit ------------------------------------------------------------
 
 _ALLOW_DEFAULT = {"slots": list(_RACKS), "implants": False, "boosters": False,
-                  "module_states": ["active"]}
+                  "module_states": ["active"], "command": False, "phenomena": False}
 _FITTING_KEYS = ("ship.cpuOutput", "ship.powerOutput", "ship.upgradeCapacity")
 _PAIR_OPTIONS = 6
 _MAIN_SHARE = 0.85  # of each budget; the polish pass gets the rest
@@ -517,6 +517,9 @@ def _allow(allow: dict | None) -> dict:
     if "active" not in merged["module_states"]:
         raise ValueError('allow.module_states must include "active": a module is overheated '
                          'on top of being active, so heat alone is not a choice')
+    for name in ("implants", "boosters", "command", "phenomena"):
+        if not isinstance(merged[name], bool):
+            raise ValueError(f"allow.{name} must be true or false")
     return merged
 
 
@@ -813,6 +816,80 @@ def _polish(search, options, budget, started) -> dict:
     return out
 
 
+_RUNNERS_UP = 3
+
+
+def _fleet(ref, raw, keys, key, sign, edits, allow, ok) -> tuple[list, dict]:
+    """The bursts and phenomena that most help the fit `edits` make. Pyfa keeps the
+    strongest value per buff, so each charge comes from its strongest source and is
+    kept if it helps on its own; phenomena are then tried on top, and none."""
+    from pyfa_mcp import fleet
+
+    def booster(source, charge):
+        return {"command": [{"fit": fleet.booster_eft(source["hull"],
+                                                      [(source["module"], charge)],
+                                                      source["mindlink"])}]}
+
+    ranked = fleet.by_charge(ok) if allow["command"] else {}
+    charges = list(ranked)
+    results = pool.run(ref, raw, keys, [(edits, None)] + [
+        (edits, booster(ranked[c][0], c)) for c in charges])
+    if results[0].values is None:
+        raise ValueError(f"Pyfa could not compute the fit: {results[0].error}")
+    base = results[0].values[key]
+    kept = []
+    for charge, trial in zip(charges, results[1:]):
+        if trial.values is None:
+            continue
+        delta = trial.values[key] - base
+        if sign * delta > 0 and not _zero(delta, base):
+            kept.append({**ranked[charge][0], "charge": charge, "delta": delta})
+    # ponytail: runners-up and phenomena ignore constraints; the final fit is
+    # confirmed with them, so a broken constraint shows as valid: false.
+    runners = [(k, s) for k in kept for s in ranked[k["charge"]][1:1 + _RUNNERS_UP]]
+    measured = pool.run(ref, raw, keys, [(edits, booster(s, k["charge"]))
+                                         for k, s in runners]) if runners else []
+    ups: dict[str, list] = {}
+    for (k, s), trial in zip(runners, measured):
+        if trial.values is not None:
+            ups.setdefault(k["charge"], []).append(
+                {"hull": s["hull"], "module": s["module"], "mindlink": s["mindlink"],
+                 "delta": trial.values[key] - base})
+    fits = fleet.booster_fits(kept)
+    command = [{"fit": text} for text in fits]
+    bursts = [{**{f: k[f] for f in ("charge", "module", "hull", "mindlink", "delta")},
+               "runners_up": ups.get(k["charge"], [])} for k in kept]
+
+    phenomena = None
+    if allow["phenomena"]:
+        generators = candidates._phenomena(ok, [])
+        tried = pool.run(ref, raw, keys, [(edits, {"command": command})] + [
+            (edits, {"command": command + g.extra["command"]}) for g in generators])
+        none = tried[0].values[key]
+        deltas = {"none": 0.0, **{g.name: t.values[key] - none
+                                  for g, t in zip(generators, tried[1:])
+                                  if t.values is not None}}
+        chosen = max(deltas, key=lambda n: (sign * deltas[n], n == "none"))
+        if chosen != "none" and _zero(deltas[chosen], none):
+            chosen = "none"
+        if chosen != "none":
+            extra = next(g for g in generators if g.name == chosen).extra["command"]
+            command += extra
+            fits = fits + [e["fit"] for e in extra]
+        phenomena = {"chosen": None if chosen == "none" else chosen, "deltas": deltas}
+    return command, {"bursts": bursts, "phenomena": phenomena, "booster_fits": fits}
+
+
+def _under(search, raw) -> "_Search":
+    """The same search, measuring under other conditions (a chosen fleet)."""
+    other = _Search(search.ref, raw, search.key, search.sign, search.cons,
+                    {"evaluations": search.left}, search.deadline, search.places,
+                    search.place_key, search.options)
+    other.top, other.full = search.top, search.full
+    other.evaluations, other.problems = search.evaluations, search.problems
+    return other
+
+
 _NEAR_WINNERS = 20
 
 
@@ -856,6 +933,11 @@ def optimize_fit(fit: str, objective: str, raw_conditions: dict | None = None,
     if raw.get("module_states"):
         raise ValueError("optimize_fit chooses the modules: set heat with "
                          "allow.module_states, not conditions.module_states")
+    wants_fleet = allow["command"] or allow["phenomena"]
+    if wants_fleet and raw.get("command"):
+        raise ValueError("allow.command/allow.phenomena: the search chooses the bursts and "
+                         "phenomena; leave conditions.command empty, or turn those off")
+    ok = candidates.item_filter(meta, availability)
     if top_k < 1:
         raise ValueError("top_k must be at least 1")
     if set(budget or {}) - {"evaluations", "seconds"}:
@@ -902,6 +984,8 @@ def optimize_fit(fit: str, objective: str, raw_conditions: dict | None = None,
         applied = {**b.applied, "meta": found.meta_note,
                    "availability": found.availability_note,
                    "heat": " and ".join(allow["module_states"]), "left_out": left_out}
+        if wants_fleet:
+            applied["command"] = "chosen by the search (see fleet)"
 
     sets = [c for c in found.candidates if c.group == "Implant sets"]
     main_budget = {"evaluations": max(1, int(budget["evaluations"] * _MAIN_SHARE))}
@@ -910,6 +994,8 @@ def optimize_fit(fit: str, objective: str, raw_conditions: dict | None = None,
     pruned: dict = {}
     considered = polish_options = options  # until pruning has run
     converged = True
+    searches = [search]
+    fleet_command, fleet_out = [], None
     try:
         try:
             clean = {w: None for w in places}
@@ -951,20 +1037,35 @@ def optimize_fit(fit: str, objective: str, raw_conditions: dict | None = None,
             search.improve(seeds, sets)
         except _OutOfBudget:
             converged = False
+        ranked = _ranked(search)
+        if wants_fleet and ranked:
+            fleet_command, _ = _fleet(ref, raw, search.keys, key, sign,
+                                      search.edits(ranked[0][1]), allow, ok)
+            if converged:  # improve the fit under that fleet
+                search = _under(search, bench.merge_conditions(raw, {"command": fleet_command}))
+                searches.append(search)
+                try:
+                    search.improve([ranked[0][1]], sets)
+                except _OutOfBudget:
+                    converged = False
         polish = _polish(search, polish_options, budget, started)
+        ranked = _ranked(search)
+        if wants_fleet and ranked:  # the fleet for the fit as polished
+            fleet_command, fleet_out = _fleet(ref, raw, search.keys, key, sign,
+                                              search.edits(ranked[0][1]), allow, ok)
     finally:
-        search.stack.close()
-
-    ranked = _ranked(search)
+        for each in searches:
+            each.stack.close()
+    final = bench.merge_conditions(raw, {"command": fleet_command}) if fleet_command else raw
     best = []
     for score, state in ranked[:top_k]:
-        confirmed = _confirm(ref, raw, search.edits(state))
+        confirmed = _confirm(ref, final, search.edits(state))
         flat = confirmed["flat"]
         shown = list(dict.fromkeys([key, *(s for s, _, _ in cons), *stats.DEFAULT_COMPARE]))
         holds = all(_holds(flat[s], op, x) for s, op, x in cons)
         entry = {"eft": confirmed["eft"], "objective_value": flat[key]}
         if "overheated" in allow["module_states"]:
-            entry["objective_cold"] = _value(confirmed["eft"], raw, key)
+            entry["objective_cold"] = _value(confirmed["eft"], final, key)
         entry.update(stats={k: flat[k] for k in shown if k in flat},
                      valid=bool(flat["validity.valid"]) and holds,
                      warnings=confirmed["result"]["warnings"],
@@ -975,6 +1076,8 @@ def optimize_fit(fit: str, objective: str, raw_conditions: dict | None = None,
     out = {"applied": applied,
            "best": best if verbose or not best else best[:1] + [_diff(best[0], b)
                                                               for b in best[1:]]}
+    if wants_fleet:
+        out["fleet"] = fleet_out
     if not best:
         common = search.problems.most_common(1)
         out["reason"] = (

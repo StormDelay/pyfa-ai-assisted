@@ -223,14 +223,20 @@ def optimize_fit(fit: str, objective: str, conditions: dict | None = None,
     won't miss modules you didn't think of. fit: hull name or EFT (a start
     point). objective: stat key, "-" prefix to minimize. allow: {slots: [high,
     mid, low, rig], implants: bool, boosters: bool, module_states: [active,
-    overheated]} (default: all racks, no implants/boosters, no overheat).
+    overheated], command: bool, phenomena: bool} (default: all racks, no
+    implants/boosters, no overheat, no fleet search). command/phenomena: the
+    search also picks the command bursts (each charge from its strongest hull,
+    module and mindlink in the game data) and the phenomena generator, and
+    returns them under `fleet` with runner-up hulls and booster fits; set them
+    for best/max/min questions unless the user fixed the fleet, and leave
+    conditions.command empty then. Otherwise command bursts, phenomena,
+    projected and environment stay as conditions set them.
     locked: EFT lines that must stay. constraints: [{"stat", "eq"|"lte"|"gte":
     value}]. budget: {evaluations, seconds} (default 20000, 60). Officer and
     Deadspace items are left out unless meta includes them (meta=["all"]).
     Serenity-only, character-age-limited and expiring items are left out unless
     availability="all" (default "tq"); rows show an item's `limits`.
-    Command bursts, phenomena, projected and environment stay as conditions set
-    them. Every returned fit is computed by evaluate_fit; its `conditions`
+    Every returned fit is computed by evaluate_fit; its `conditions`
     reproduce it there (module states included: EFT has no heat), and with heat
     allowed `objective_cold` is the same fit unheated. best[0]["polish"] lists
     the single swaps a last pass made. `search.converged` says whether the search

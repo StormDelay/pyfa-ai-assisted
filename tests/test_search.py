@@ -529,3 +529,42 @@ def test_t8_bursts_are_measured_from_the_strongest_source(booted, no_fits_left):
     by_vulture = (_ehp("[Wyvern, x]\n", {"command": [{"fit": vulture}]})
                   - _ehp("[Wyvern, x]\n", None))
     assert row["delta"]["tank.ehp.total"] > by_vulture
+
+
+FLEET_ONLY = {"slots": [], "command": True, "phenomena": True}
+
+
+def test_t9_the_optimizer_picks_the_fleet(booted, no_fits_left):
+    result = search.optimize_fit(wyvern.BEST_LOWS, "tank.ehp.total", allow=FLEET_ONLY,
+                                 top_k=1)
+    chosen = result["fleet"]
+    shield = [b for b in chosen["bursts"] if "Shield Command Burst" in b["module"]]
+    assert {"Shield Harmonizing Charge", "Shield Extension Charge"} <= {b["charge"]
+                                                                       for b in shield}
+    assert all(b["hull"] in ("Simurgh", "Ymir") and b["runners_up"] for b in shield)
+    deltas = chosen["phenomena"]["deltas"]
+    assert {"none", "Amarr Phenomena Generator", "Caldari Phenomena Generator"} <= set(deltas)
+    for text in chosen["booster_fits"]:
+        assert evaluate.evaluate(text, None)["validity"]["valid"] is True
+    best = result["best"][0]
+    vulture = ("[Vulture, b]\n\n\nShield Command Burst II, Shield Harmonizing Charge\n"
+               "Shield Command Burst II, Shield Extension Charge\n")
+    assert best["objective_value"] > _ehp(wyvern.BEST_LOWS, {"command": [{"fit": vulture}]})
+    assert _ehp(best["eft"], best["conditions"]) == pytest.approx(best["objective_value"],
+                                                                 rel=1e-12)
+    assert result["applied"]["command"].startswith("chosen by the search")
+
+
+def test_t10_a_searched_fleet_refuses_a_given_one(booted, zealot_eft):
+    with pytest.raises(ValueError, match="allow.command"):
+        search.optimize_fit(zealot_eft, "tank.ehp.total", wyvern.CONDITIONS,
+                            allow={"command": True})
+    with pytest.raises(ValueError, match="allow.phenomena must be true or false"):
+        search.optimize_fit(zealot_eft, "tank.ehp.total", allow={"phenomena": "yes"})
+
+
+def test_a_fleet_search_without_a_valid_fit_says_why(booted, no_fits_left):
+    short = search.optimize_fit(OVER_PG, "tank.ehp.total", allow={"command": True},
+                                budget={"evaluations": 1})
+    assert short["best"] == [] and short["fleet"] is None
+    assert short["reason"].startswith("the budget ran out")
