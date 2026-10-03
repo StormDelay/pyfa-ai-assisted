@@ -14,20 +14,24 @@ import time
 from collections import Counter, OrderedDict
 from typing import NamedTuple
 
-from pyfa_mcp import bench, candidates, conditions, drift, eft, evaluate, pool, stats, store
+from pyfa_mcp import (bench, candidates, conditions, drift, eft, evaluate, pool, pyfadata,
+                      stats, store)
 from pyfa_mcp.bench import Edit
 
-_CACHE: OrderedDict = OrderedDict()
+# Candidate pools and find_modifiers/marginal_swaps trial results; optimize_fit's
+# batches are never asked twice and bypass the cache.
+_POOLS: OrderedDict = OrderedDict()
+_TRIALS: OrderedDict = OrderedDict()
 _CACHE_SIZE = 32
 
 
-def _cached(key, compute):
-    if key in _CACHE:
-        _CACHE.move_to_end(key)
-        return _CACHE[key]
-    value = _CACHE[key] = compute()
-    if len(_CACHE) > _CACHE_SIZE:
-        _CACHE.popitem(last=False)
+def _cached(cache: OrderedDict, key, compute):
+    if key in cache:
+        cache.move_to_end(key)
+        return cache[key]
+    value = cache[key] = compute()
+    if len(cache) > _CACHE_SIZE:
+        cache.popitem(last=False)
     return value
 
 
@@ -81,15 +85,31 @@ def _portable(raw: dict | None) -> dict:
     return raw
 
 
+def _own_profiles(raw: dict) -> list:
+    """What the user's own Pyfa profiles named in `raw` hold now: a cache key part,
+    so an edited profile is measured again."""
+    out = []
+    for name, kind, builtins, mine in (
+            ("damage_profile", "damage profile", conditions._builtin_damage_profiles,
+             pyfadata.damage_profiles),
+            ("target", "target profile", conditions._builtin_target_profiles,
+             pyfadata.target_profiles)):
+        value = raw.get(name)
+        if isinstance(value, str) and value != "uniform":
+            found = conditions._by_name(value, kind, builtins(), mine)
+            out.append(found if isinstance(found, dict) else None)
+    return out
+
+
 def _run(ref: str, raw: dict, keys: list[str], trials: list) -> list:
-    key = ("trials", json.dumps([ref, raw, list(keys), trials], sort_keys=True))
-    return _cached(key, lambda: pool.run(ref, raw, list(keys), trials))
+    key = json.dumps([ref, raw, _own_profiles(raw), list(keys), trials], sort_keys=True)
+    return _cached(_TRIALS, key, lambda: pool.run(ref, raw, list(keys), trials))
 
 
 def _pool(fit, sources: set[str], meta: list[str] | None):
     subs = tuple(sorted(m.item.ID for m in fit.modules if not m.isEmpty and m.slot == 5))
-    key = ("pool", fit.ship.item.ID, subs, json.dumps(meta), tuple(sorted(sources)))
-    return _cached(key, lambda: candidates.build(fit, sources, meta))
+    key = (fit.ship.item.ID, subs, json.dumps(meta), tuple(sorted(sources)))
+    return _cached(_POOLS, key, lambda: candidates.build(fit, sources, meta))
 
 
 def _excluded_rows(excluded: list[dict]) -> list[dict]:
@@ -576,7 +596,7 @@ class _Search:
 
     def _trials(self, edits: list) -> list:
         if pool.size() and (len(edits) >= pool.INLINE_LIMIT or pool.running()):
-            return _run(self.ref, self.raw, self.keys, [(e, None) for e in edits])
+            return pool.run(self.ref, self.raw, self.keys, [(e, None) for e in edits])
         if self.bench is None:  # in-process: one bench for the whole search
             self.bench = self.stack.enter_context(bench.Bench(self.ref, self.raw))
         return [self.bench.trial(e, self.keys) for e in edits]

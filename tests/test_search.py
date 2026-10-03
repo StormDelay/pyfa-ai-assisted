@@ -325,3 +325,67 @@ def test_marginal_swaps_names_an_invalid_baseline(booted, no_fits_left):
     assert result["baseline_invalid"] == ["Damage Control II was left out: "
                                           "cannot be fitted to this ship"]
     assert result["reason"].startswith("the fit is invalid as given")
+
+
+HOME_EM = {"damage_profile": "Home EM"}
+
+
+def _rigs(cond):
+    return search.find_modifiers("Rifter", ["tank.ehp.total"], sources=["rig"],
+                                 raw_conditions=cond)["groups"]
+
+
+def test_workers_read_the_users_own_pyfa_profiles(pyfa_home, no_fits_left, monkeypatch):
+    monkeypatch.setattr(pool, "INLINE_LIMIT", 0)
+    before = pool.size()
+    try:
+        pool.configure(0)
+        inline = _rigs(HOME_EM)
+        search._TRIALS.clear()
+        pool.configure(2)
+        pooled = _rigs(HOME_EM)
+    finally:
+        pool.configure(before)
+    assert pooled == inline
+
+
+def test_an_edited_pyfa_profile_is_not_served_from_cache(pyfa_home, no_fits_left,
+                                                         monkeypatch):
+    import contextlib
+    import sqlite3
+    monkeypatch.setattr(pool, "_size", 0)
+    first = _rigs(HOME_EM)
+    with contextlib.closing(sqlite3.connect(pyfa_home / "saveddata.db")) as db:
+        db.execute("UPDATE damagePatterns SET emAmount = 0, explosiveAmount = 1 "
+                   "WHERE name = 'Home EM'")
+        db.commit()
+    second = _rigs(HOME_EM)
+    search._TRIALS.clear()
+    assert second == _rigs(HOME_EM) != first
+
+
+def test_optimize_fit_leaves_the_find_modifiers_cache_alone(booted, zealot_eft, no_fits_left,
+                                                            monkeypatch):
+    from pyfa_mcp import bench
+    calls = []
+
+    def counting(ref, raw, keys, trials):
+        calls.append(len(trials))
+        return bench.run_trials(ref, raw, keys, trials)
+
+    monkeypatch.setattr(pool, "run", counting)
+    monkeypatch.setattr(pool, "_size", 2)
+    monkeypatch.setattr(pool, "running", lambda: True)  # every batch goes to "the pool"
+    search._TRIALS.clear()
+
+    def ask():
+        return search.find_modifiers(zealot_eft, ["tank.ehp.total"], sources=["rig"])
+
+    first = ask()
+    cached = list(search._TRIALS)
+    search.optimize_fit(zealot_eft, "tank.ehp.total", allow={"slots": ["rig"]}, top_k=1,
+                        budget={"evaluations": 300})
+    assert list(search._TRIALS) == cached
+    asked = len(calls)
+    assert asked > 1  # the optimizer did use the pool
+    assert ask() == first and len(calls) == asked
