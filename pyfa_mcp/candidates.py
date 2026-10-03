@@ -13,8 +13,6 @@ SOURCES = ("module", "rig", "subsystem", "charge", "implant", "booster",
            "command_burst", "phenomena", "projected", "environment")
 DEFAULT_HIDDEN_META = ("Officer", "Deadspace")
 _GRADES = ("Low-grade", "Mid-grade", "High-grade")
-# Unbonused for every burst, so its deltas are a floor: command ships give more.
-_BURST_HULL = "Ferox"
 _TITANS = {"Amarr": "Avatar", "Caldari": "Leviathan", "Gallente": "Erebus",
            "Minmatar": "Ragnarok"}
 _IGNORED_ATTRS = frozenset({"metaLevelOld", "metaGroupID", "techLevel", "metaLevel"})
@@ -39,6 +37,8 @@ class Candidate:
     overheat: bool = False
     active: bool = False
     modifies: tuple = ()
+    limits: tuple = ()
+    note: str | None = None  # how it was measured, when that needs saying
 
 
 @dataclass
@@ -48,6 +48,7 @@ class Pool:
     duplicates: dict  # kept name -> twin Candidates, measured once
     scanned: int
     meta_note: str
+    availability_note: str = ""
 
 
 def parse_sources(sources: list[str] | None) -> set[str]:
@@ -69,6 +70,24 @@ def meta_filter(meta: list[str] | None):
     if "all" in wanted:
         return (lambda m: True), "every meta level"
     return (lambda m: m.casefold() in wanted), "only " + ", ".join(meta)
+
+
+def availability_filter(availability: str | None):
+    if availability in (None, "tq"):
+        return (lambda item: not catalog.limits(item),
+                "Tranquility items anyone can use (default): Serenity-only, "
+                "character-age-limited and expiring items are left out; pass "
+                "availability=\"all\" to include them")
+    if availability == "all":
+        return (lambda item: True), "every item, limited ones included"
+    raise ValueError(f'availability: use "tq" (the default) or "all", not {availability!r}')
+
+
+def item_filter(meta: list[str] | None, availability: str | None):
+    """Whether an item passes both the meta and the availability filter."""
+    allowed, _ = meta_filter(meta)
+    open_, _ = availability_filter(availability)
+    return lambda item: allowed(catalog._meta(item)) and open_(item)
 
 
 def why_not(fit, item) -> str | None:
@@ -144,11 +163,12 @@ def _local(item, source: str, slot: str, charge=None) -> Candidate:
         cpu=item.getAttribute("cpu") or 0.0, pg=item.getAttribute("power") or 0.0,
         calibration=item.getAttribute("upgradeCost") or 0.0,
         exclusive_group=_exclusive(item), overheat=item.isType("overheat"),
-        active=item.isType("active"), modifies=_modifies(item))
+        active=item.isType("active"), modifies=_modifies(item),
+        limits=tuple(catalog.limits(item)))
 
 
-def _charges(item, allowed) -> list:
-    return [c for c in catalog.valid_charges(item) if allowed(catalog._meta(c))]
+def _charges(item, ok) -> list:
+    return [c for c in catalog.valid_charges(item) if ok(c)]
 
 
 def _pod(item, sources) -> list[Candidate]:
@@ -167,7 +187,8 @@ def _pod(item, sources) -> list[Candidate]:
     return [Candidate(name=item.name, source=kind, slot=f"{kind} {slot}",
                       group=item.group.name, meta=catalog._meta(item), type_id=item.ID,
                       edits=(Edit((kind, slot), item.ID),),
-                      exclusive_group=f"{kind} slot {slot}", modifies=_modifies(item))]
+                      exclusive_group=f"{kind} slot {slot}", modifies=_modifies(item),
+                      limits=tuple(catalog.limits(item)))]
 
 
 def _sets(implants: list[Candidate]) -> list[Candidate]:
@@ -195,24 +216,32 @@ def _sets(implants: list[Candidate]) -> list[Candidate]:
     return out
 
 
-def _bursts(allowed) -> list[Candidate]:
+def _bursts(ok) -> list[Candidate]:
+    from pyfa_mcp import fleet
+
     out = []
     for item in catalog.published_items(groups=("Command Burst",)):
-        if not allowed(catalog._meta(item)):
+        found = fleet.sources(item.name, ok) if ok(item) else []
+        if not found:
             continue
+        best = found[0]
+        note = (f"measured from {best['hull']}"
+                + (f" + {best['mindlink']}" if best["mindlink"] else "")
+                + ", All V: the strongest source in the game data")
         for charge in catalog.valid_charges(item):
-            booster = f"[{_BURST_HULL}, {item.name}]\n\n\n{item.name}, {charge.name}\n"
+            booster = fleet.booster_eft(best["hull"], [(item.name, charge.name)],
+                                        best["mindlink"])
             out.append(Candidate(
                 name=f"{item.name} + {charge.name}", source="command_burst", slot="external",
                 group=charge.name, meta=catalog._meta(item), type_id=item.ID,
-                charge_id=charge.ID, extra={"command": [{"fit": booster}]}))
+                charge_id=charge.ID, extra={"command": [{"fit": booster}]}, note=note))
     return out
 
 
-def _phenomena(allowed, excluded: list) -> list[Candidate]:
+def _phenomena(ok, excluded: list) -> list[Candidate]:
     out = []
     for item in catalog.published_items(groups=("Titan Phenomena Generator",)):
-        if not allowed(catalog._meta(item)):
+        if not ok(item):
             continue
         titan = _TITANS.get(item.name.split()[0])
         if titan is None:
@@ -255,10 +284,13 @@ def _dedupe(found: list[Candidate]) -> tuple[list[Candidate], dict]:
     return keep, twins
 
 
-def build(fit, sources: set[str], meta: list[str] | None) -> Pool:
+def build(fit, sources: set[str], meta: list[str] | None,
+          availability: str | None = None) -> Pool:
     from eos.saveddata.module import Module
 
     allowed, note = meta_filter(meta)
+    open_, availability_note = availability_filter(availability)
+    ok = item_filter(meta, availability)
     found: list[Candidate] = []
     excluded: list[dict] = []
     items = catalog.published_items(categories=("Module", "Subsystem", "Implant"))
@@ -266,6 +298,9 @@ def build(fit, sources: set[str], meta: list[str] | None) -> Pool:
         meta_name = catalog._meta(item)
         if not allowed(meta_name):
             excluded.append(_excluded(item, f"meta {meta_name} not requested"))
+            continue
+        if not open_(item):
+            excluded.append(_excluded(item, catalog.limits(item)[0]))
             continue
         if item.category.name == "Implant":
             found += _pod(item, sources)
@@ -286,12 +321,12 @@ def build(fit, sources: set[str], meta: list[str] | None) -> Pool:
         if source in sources:
             found.append(_local(item, source, slot))
         if wants_charges:
-            found += [_local(item, "charge", slot, c) for c in _charges(item, allowed)]
+            found += [_local(item, "charge", slot, c) for c in _charges(item, ok)]
     scanned = len(items)
     if "command_burst" in sources:
-        found += _bursts(allowed)
+        found += _bursts(ok)
     if "phenomena" in sources:
-        found += _phenomena(allowed, excluded)
+        found += _phenomena(ok, excluded)
     if "environment" in sources:
         beacons = catalog.published_items(groups=Module.SYSTEM_GROUPS)
         scanned += len(beacons)
@@ -299,4 +334,4 @@ def build(fit, sources: set[str], meta: list[str] | None) -> Pool:
     if "implant" in sources:
         found += _sets([c for c in found if c.source == "implant"])
     found, duplicates = _dedupe(found)
-    return Pool(found, excluded, duplicates, scanned, note)
+    return Pool(found, excluded, duplicates, scanned, note, availability_note)

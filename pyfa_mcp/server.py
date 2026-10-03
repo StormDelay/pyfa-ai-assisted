@@ -44,7 +44,20 @@ pyfa-mcp computes EVE Online fits with Pyfa's own engine.
   whole fits); audit a hand-built fit with marginal_swaps. Never choose
   candidates from memory or search_items alone.
 - Those three leave Officer and Deadspace items out unless meta includes
-  them (meta=["all"]); tell the user which you used.
+  them (meta=["all"]), and Serenity-only, character-age-limited and
+  expiring items unless availability="all"; tell the user which you used.
+- For a best/max/min fit, set optimize_fit's allow.command and
+  allow.phenomena unless the user fixed the fleet: it then picks the bursts
+  and phenomena from the game data.
+- optimize_fit's default budget lets even a whole fit (implants, boosters,
+  heat, fleet) finish, which can take a few minutes. When an approximate
+  answer is enough (a quick look, a first pass, comparing ideas), pass a
+  smaller budget such as {"seconds": 30}: the result is then the best found
+  so far. Whenever search.converged is false, tell the user the answer may
+  not be the best and offer to search longer.
+- The game data may be newer than your training. Find ships and items
+  with the tools (list_ships can_fit/bonus, find_modifiers, whats_new),
+  never from memory.
 - Walk conditions_format()["beyond_the_fit"] (pod, drugs, links, phenomena,
   projected, environment, heat, mode) and tell the user which of those you
   assumed, set, or left out.
@@ -102,7 +115,9 @@ def search_items(query: str, category: str | None = None, meta: str | None = Non
                  limit: int = 25) -> list:
     """Find items by name. category: e.g. Module, Drone, Charge, Ship, Implant.
     meta: Tech I, Tech II, Faction, Deadspace, Officer, Storyline, ... Returns
-    name, group, category, meta, slot (high/mid/low/rig/subsystem), cpu, powergrid.
+    name, group, category, meta, slot (high/mid/low/rig/subsystem, "implant 7",
+    "booster 5"), cpu, powergrid, and `limits` when most pilots cannot use it
+    (Serenity only, character age, expiry).
     Matches names only. To find items by what they do (e.g. everything that adds
     shield HP), use find_modifiers."""
     return catalog.search_items(query, category, meta, limit)
@@ -110,10 +125,17 @@ def search_items(query: str, category: str | None = None, meta: str | None = Non
 
 @app.tool()
 @_tool
-def list_ships(group: str | None = None, race: str | None = None) -> list:
+def list_ships(group: str | None = None, race: str | None = None,
+               can_fit: str | None = None, bonus: str | None = None) -> list:
     """Ships with slot, hardpoint and drone layouts. group: e.g. Battleship,
-    Heavy Assault Cruiser, Carrier. race: amarr, caldari, gallente, minmatar, ..."""
-    return catalog.list_ships(group, race)
+    Heavy Assault Cruiser, Carrier. race: amarr, caldari, gallente, minmatar, ...
+    can_fit: an item or item group name ("Command Burst"): only hulls that can fit
+    it (T3 cruisers need subsystems for their slots and don't match).
+    bonus: words that must all appear in one trait line ("Shield Command burst
+    strength"); rows then carry the matching `bonuses` with their value at All V,
+    sorted strongest first. Use these to find hulls rather than recalling them:
+    the game data may be newer than your training."""
+    return catalog.list_ships(group, race, can_fit, bonus)
 
 
 @app.tool()
@@ -121,6 +143,16 @@ def list_ships(group: str | None = None, race: str | None = None) -> list:
 def item_info(name: str) -> dict:
     """All attributes and the trait/bonus text of one item (ship, module, charge...)."""
     return catalog.item_info(name)
+
+
+@app.tool()
+@_tool
+def whats_new(category: str | None = None, limit: int = 30) -> dict:
+    """The newest items in the game data, newest first: ships, modules, implants,
+    charges, drones, fighters, subsystems (category picks one). The data has no
+    dates, so this orders by type ID (higher = added later). Use it when an answer
+    depends on what exists: the game data may be newer than your training."""
+    return catalog.whats_new(category, limit)
 
 
 # --- evaluation --------------------------------------------------------------
@@ -140,13 +172,16 @@ def evaluate_fit(fit: str, conditions: dict | None = None) -> dict:
 @app.tool()
 @_tool
 def compare_fits(fits: list[str], conditions: dict | None = None,
-                 stats: list[str] | None = None) -> dict:
+                 stats: list[str] | None = None, variants: list[dict] | None = None) -> dict:
     """Evaluate many fits under the same conditions into one table. `stats` picks
     columns by dotted key from evaluate_fit's output (e.g. "tank.ehp.total",
     "offense.dps.total", "targeting.lock_range_m"); omitted = a standard set.
+    variants: a list of partial conditions, each merged over `conditions` (top-level
+    keys replace), giving one row per fit and variant: e.g. one fit under several
+    booster fits, damage profiles or phenomena in a single call.
     A fit that fails gets an `error` in its row; the others still compute.
     To check whether a fit can be improved, use marginal_swaps."""
-    return evaluate.compare(fits, conditions, stats)
+    return evaluate.compare(fits, conditions, stats, variants)
 
 
 # --- search ------------------------------------------------------------------
@@ -155,7 +190,8 @@ def compare_fits(fits: list[str], conditions: dict | None = None,
 @_tool
 def find_modifiers(fit: str, stats: list[str], sources: list[str] | None = None,
                    meta: list[str] | None = None, conditions: dict | None = None,
-                   expand: list[str] | None = None) -> dict:
+                   expand: list[str] | None = None, availability: str | None = None,
+                   verbose: bool = False) -> dict:
     """What can change a stat on this hull. Use it before saying what is best or
     max/min/optimal, and whenever the user asks what affects or what else could
     raise or lower a stat (EHP, DPS, lock range, align...). Measures every legal
@@ -165,28 +201,39 @@ def find_modifiers(fit: str, stats: list[str], sources: list[str] | None = None,
     you would not think to search for. One row per item group: best variant, a
     Tech II/Faction reference, delta range; expand=["Group"] or ["*"] lists every
     variant. Officer and Deadspace items are left out unless meta includes them
-    (meta=["all"]). stats: evaluate_fit keys (tank.ehp.total) or ship.<attribute>;
+    (meta=["all"]).
+    Serenity-only, character-age-limited and expiring items are left out unless
+    availability="all" (default "tq"); rows show an item's `limits`.
+    stats: evaluate_fit keys (tank.ehp.total) or ship.<attribute>;
     prefix "-" when lower is better ("-navigation.align_time_s"): it orders the
     rows and decides what counts as a drawback (the first stat ranks).
     sources: module, rig, subsystem, charge, implant, booster, command_burst,
-    phenomena, projected, environment (default all). Then call optimize_fit."""
-    return search.find_modifiers(fit, stats, sources, meta, conditions, expand)
+    phenomena, projected, environment (default all). Then call optimize_fit.
+    Output is compact (excluded and pruned items as counts by reason);
+    verbose=true lists every item."""
+    return search.find_modifiers(fit, stats, sources, meta, conditions, expand,
+                                 availability=availability, verbose=verbose)
 
 
 @app.tool()
 @_tool
 def marginal_swaps(fit: str, objective: str, conditions: dict | None = None,
                    meta: list[str] | None = None, include_empty_slots: bool = True,
-                   top_n: int = 10) -> dict:
+                   top_n: int = 10, availability: str | None = None,
+                   verbose: bool = False) -> dict:
     """Is there any single change that makes this fit better? Use it to audit a
     hand-built fit before recommending it as the best or max for a stat. Tries
     every module, rig, charge, implant and booster that fits each slot, every
     empty slot and every removal; returns the valid ones sorted by gain
     (objective: a stat key; prefix "-" to minimize, e.g. "-navigation.align_time_s").
     The top swap is confirmed with evaluate_fit. Officer and Deadspace items are
-    left out unless meta includes them (meta=["all"])."""
+    left out unless meta includes them (meta=["all"]).
+    Serenity-only, character-age-limited and expiring items are left out unless
+    availability="all" (default "tq"); rows show an item's `limits`.
+    Output is compact (excluded and pruned items as counts by reason);
+    verbose=true lists every item."""
     return search.marginal_swaps(fit, objective, conditions, meta, include_empty_slots,
-                                 top_n)
+                                 top_n, availability=availability, verbose=verbose)
 
 
 @app.tool()
@@ -194,22 +241,39 @@ def marginal_swaps(fit: str, objective: str, conditions: dict | None = None,
 def optimize_fit(fit: str, objective: str, conditions: dict | None = None,
                  allow: dict | None = None, meta: list[str] | None = None,
                  locked: str | None = None, constraints: list[dict] | None = None,
-                 top_k: int = 5, budget: dict | None = None) -> dict:
+                 top_k: int = 5, budget: dict | None = None,
+                 availability: str | None = None, verbose: bool = False) -> dict:
     """Search for the best fit for a stat. Use it whenever the user asks for the
     best, highest, max, min-max or optimal fit, or before recommending a module
     choice. It builds its candidates from every item that affects the stat, so it
     won't miss modules you didn't think of. fit: hull name or EFT (a start
     point). objective: stat key, "-" prefix to minimize. allow: {slots: [high,
     mid, low, rig], implants: bool, boosters: bool, module_states: [active,
-    overheated]} (default: all racks, no implants/boosters, no overheat).
+    overheated], command: bool, phenomena: bool} (default: all racks, no
+    implants/boosters, no overheat, no fleet search). command/phenomena: the
+    search also picks the command bursts (each charge from its strongest hull,
+    module and mindlink in the game data) and the phenomena generator, and
+    returns them under `fleet` with runner-up hulls and booster fits; set them
+    for best/max/min questions unless the user fixed the fleet, and leave
+    conditions.command empty then. Otherwise command bursts, phenomena,
+    projected and environment stay as conditions set them.
     locked: EFT lines that must stay. constraints: [{"stat", "eq"|"lte"|"gte":
-    value}]. budget: {evaluations, seconds} (default 20000, 60). Officer and
+    value}]. budget: {evaluations, seconds} (default 400000, 300: enough for a
+    whole fit to finish, which can take minutes; pass less, e.g. {"seconds":
+    30}, when an approximate answer is enough). Officer and
     Deadspace items are left out unless meta includes them (meta=["all"]).
-    Command bursts, phenomena, projected and environment stay as conditions set
-    them. Every returned fit is computed by evaluate_fit; `search.converged`
-    says whether the search finished inside the budget."""
+    Serenity-only, character-age-limited and expiring items are left out unless
+    availability="all" (default "tq"); rows show an item's `limits`.
+    Every returned fit is computed by evaluate_fit; its `conditions`
+    reproduce it there (module states included: EFT has no heat), and with heat
+    allowed `objective_cold` is the same fit unheated. best[0]["polish"] lists
+    the single swaps a last pass made. `search.converged` says whether the search
+    finished inside the budget. Output is compact: counts for considered, pruned
+    and excluded items, and best[1:] as a diff against best[0]; verbose=true
+    lists everything whole."""
     return search.optimize_fit(fit, objective, conditions, allow, meta, locked,
-                               constraints, top_k, budget)
+                               constraints, top_k, budget, availability=availability,
+                               verbose=verbose)
 
 
 @app.tool()
@@ -244,12 +308,8 @@ def conditions_format() -> dict:
 def status() -> dict:
     """Versions (pyfa-mcp's Pyfa, the user's Pyfa, latest releases), whether the user's
     Pyfa data was found, and effects Pyfa does not compute. Relay every warning."""
-    import eos.db
-    with eos.db.gamedata_engine.connect() as connection:
-        meta = dict(connection.exec_driver_sql(
-            "SELECT field_name, field_value FROM metadata").fetchall())
     return {"pyfa_version": eosboot.pyfa_version(),
-            "game_client_build": meta.get("client_build"),
+            "game_client_build": catalog.client_build(),
             "data_dir": str(eosboot.boot(_data_dir)),
             "search_workers": pool.describe(),
             **drift.report()}

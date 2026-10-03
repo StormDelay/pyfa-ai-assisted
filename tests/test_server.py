@@ -81,6 +81,11 @@ def test_search_tools_and_redirects(booted, no_fits_left):
         assert "best" in tool.__doc__ and "Officer" in tool.__doc__
     assert "find_modifiers" in server.INSTRUCTIONS and "beyond_the_fit" in server.INSTRUCTIONS
     assert server.status()["search_workers"]["workers"] >= 0
+    assert "never from memory" in server.INSTRUCTIONS
+    assert "allow.command" in server.INSTRUCTIONS and 'availability="all"' in server.INSTRUCTIONS
+    assert server.whats_new(category="Ship", limit=3)["items"]
+    assert "approximate" in server.INSTRUCTIONS and '{"seconds": 30}' in server.INSTRUCTIONS
+    assert "approximate" in server.optimize_fit.__doc__
 
 
 def test_search_input_errors(booted):

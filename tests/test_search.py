@@ -1,3 +1,5 @@
+import json
+
 import pytest
 
 from pyfa_mcp import evaluate, pool, search, store
@@ -29,7 +31,7 @@ def test_t1_every_source_of_shield_hp(booted, no_fits_left):
 
 def test_t2_assault_damage_control_is_excluded_with_a_reason(booted, no_fits_left):
     result = search.find_modifiers("Wyvern", ["tank.ehp.total"], sources=["module"],
-                                   meta=["all"])
+                                   meta=["all"], verbose=True)
     rows = [e for e in result["excluded"] if e["group"] == "Damage Control"
             and e["reason"].startswith("cannot be fitted to")]
     assert rows and any("Assault" in name for name in rows[0]["examples"])
@@ -215,7 +217,7 @@ def test_optimize_respects_constraints_and_budget(booted, zealot_eft, no_fits_le
     speed = evaluate.evaluate(zealot_eft, None)["navigation"]["max_speed"]
     capped = search.optimize_fit(zealot_eft, "offense.dps.total",
                                  constraints=[{"stat": "navigation.max_speed", "gte": speed}],
-                                 allow={"slots": ["low", "mid"]}, top_k=2)
+                                 allow={"slots": ["low", "mid"]}, top_k=2, verbose=True)
     assert capped["best"]
     for fit in capped["best"]:
         assert fit["valid"] is True
@@ -429,3 +431,217 @@ def test_optimize_measures_in_pieces_and_says_why_it_stopped(booted, zealot_eft,
     assert result["search"]["stopped_by"] == "seconds"
     assert "budget.seconds" in result["search"]["note"]
     assert "in-process" in result["search"]["note"]
+
+
+def test_polish_takes_improving_singles_until_none_is_left():
+    s = search._Search.__new__(search._Search)
+    s.sign = 1
+    s.singles = lambda st: [{"a": st["a"] + 1}] if st["a"] < 3 else [{"a": 0}]
+    s.evaluate = lambda states: [((0, st["a"]), st, None) for st in states]
+    s.best = lambda moves: ((0, moves[0]["a"]), moves[0])
+    s.better = lambda score, state: score[1] > state["a"]
+    swaps = []
+    assert s.polish({"a": 0}, swaps) == {"a": 3}
+    assert swaps == [("a", 0, 1, 1), ("a", 1, 2, 1), ("a", 2, 3, 1)]
+
+
+def test_t1_a_resist_booster_is_not_pruned_on_an_empty_hull(booted, no_fits_left):
+    # On a bare Wyvern G-5 beats B-5; on this fit B-5 wins (166.60M vs 166.29M).
+    result = search.optimize_fit(wyvern.BEST_LOWS, "tank.ehp.total",
+                                 allow={"slots": ["low", "mid", "rig"], "boosters": True},
+                                 locked="\n".join(wyvern.POD), meta=["all"], top_k=1,
+                                 budget={"seconds": 600})
+    best = result["best"][0]
+    assert "Halcyon B-5 Booster" in best["eft"].splitlines()
+    assert "Halcyon G-5 Booster" not in best["eft"].splitlines()
+    assert best["polish"]["converged"] is True
+
+
+def test_t3_a_result_reproduces_with_its_conditions(booted, zealot_eft, no_fits_left):
+    result = search.optimize_fit(zealot_eft, "tank.ehp.total",
+                                 allow={"slots": ["low"],
+                                        "module_states": ["active", "overheated"]},
+                                 top_k=1, budget={"seconds": 300})
+    best = result["best"][0]
+    assert any(s["state"] == "overheated" for s in best["conditions"]["module_states"])
+    assert _ehp(best["eft"], best["conditions"]) == pytest.approx(best["objective_value"],
+                                                                 rel=1e-12)
+    assert best["objective_cold"] < best["objective_value"]
+
+
+def test_t4_compact_output_fits_a_context(booted, no_fits_left):
+    allow = {"slots": ["high", "mid", "low", "rig"], "implants": True, "boosters": True,
+             "module_states": ["active", "overheated"]}
+    compact = search.optimize_fit("Wyvern", "tank.ehp.total", wyvern.CONDITIONS,
+                                  allow=allow, budget={"seconds": 30})
+    assert len(json.dumps(compact)) < 24_000
+    assert isinstance(compact["considered"]["low"], int)
+    assert set(compact["pruned"]) == {"counts", "near_winners"}
+    assert len(compact["pruned"]["near_winners"]) <= 20
+    assert all(isinstance(n, int) for n in compact["excluded"].values())
+    assert all(set(b) == {"objective_value", "valid", "diff"} for b in compact["best"][1:])
+
+
+def test_verbose_brings_back_every_name(booted, zealot_eft, no_fits_left):
+    full = search.optimize_fit(zealot_eft, "tank.ehp.total", allow={"slots": ["low"]},
+                               top_k=2, verbose=True)
+    assert isinstance(full["considered"]["low"], list)
+    assert isinstance(full["pruned"], list) and isinstance(full["excluded"], list)
+    assert all("eft" in b for b in full["best"])
+    rows = search.find_modifiers(zealot_eft, ["tank.ehp.total"], sources=["rig"])
+    assert all(isinstance(n, int) for n in rows["excluded"].values())
+    swaps = search.marginal_swaps(zealot_eft, "tank.ehp.total")
+    assert all(isinstance(n, int) for n in swaps["coverage"]["excluded"].values())
+
+
+def test_t5_limited_items_are_hidden_unless_asked(booted, no_fits_left):
+    hidden = search.find_modifiers("Wyvern", ["tank.ehp.total"], sources=["booster"],
+                                   expand=["*"])
+    assert not [n for n in _names(hidden) if "Capsuleer" in n or n.startswith("Serenity")]
+    assert 'availability="all"' in hidden["applied"]["availability"]
+    shown = search.find_modifiers("Wyvern", ["tank.ehp.total"], sources=["booster"],
+                                  availability="all", expand=["*"])
+    chip = next(c for c in shown["candidates"]
+                if c["name"] == "Advanced Capsuleer Defense Augmentation Chip")
+    assert chip["limits"] == ["Serenity only", "characters under 100 days"]
+    pods = {"slots": [], "boosters": True}
+    tq = search.optimize_fit("Rifter", "tank.ehp.total", allow=pods, top_k=1)
+    assert "Capsuleer" not in tq["best"][0]["eft"]
+    everything = search.optimize_fit("Rifter", "tank.ehp.total", allow=pods, top_k=1,
+                                     availability="all")
+    assert "Capsuleer" in everything["best"][0]["eft"]
+
+
+def test_availability_names_its_values(booted, zealot_eft):
+    for wrong in ("TQ", "theoretical"):
+        with pytest.raises(ValueError, match='availability: use "tq" .* or "all"'):
+            search.find_modifiers(zealot_eft, ["tank.ehp.total"], availability=wrong)
+
+
+def test_t8_bursts_are_measured_from_the_strongest_source(booted, no_fits_left):
+    result = search.find_modifiers("Wyvern", ["tank.ehp.total"], sources=["command_burst"],
+                                   expand=["*"])
+    row = next(c for c in result["candidates"]
+               if c["name"] == "Shield Command Burst II + Shield Harmonizing Charge")
+    assert any(n.startswith(("measured from Simurgh", "measured from Ymir"))
+               for n in row["notes"])
+    vulture = "[Vulture, b]\n\n\nShield Command Burst II, Shield Harmonizing Charge\n"
+    by_vulture = (_ehp("[Wyvern, x]\n", {"command": [{"fit": vulture}]})
+                  - _ehp("[Wyvern, x]\n", None))
+    assert row["delta"]["tank.ehp.total"] > by_vulture
+
+
+FLEET_ONLY = {"slots": [], "command": True, "phenomena": True}
+
+
+def test_t9_the_optimizer_picks_the_fleet(booted, no_fits_left):
+    result = search.optimize_fit(wyvern.BEST_LOWS, "tank.ehp.total", allow=FLEET_ONLY,
+                                 top_k=1)
+    chosen = result["fleet"]
+    shield = [b for b in chosen["bursts"] if "Shield Command Burst" in b["module"]]
+    assert {"Shield Harmonizing Charge", "Shield Extension Charge"} <= {b["charge"]
+                                                                       for b in shield}
+    assert all(b["hull"] in ("Simurgh", "Ymir") and b["runners_up"] for b in shield)
+    deltas = chosen["phenomena"]["deltas"]
+    assert {"none", "Amarr Phenomena Generator", "Caldari Phenomena Generator"} <= set(deltas)
+    for text in chosen["booster_fits"]:
+        assert evaluate.evaluate(text, None)["validity"]["valid"] is True
+    best = result["best"][0]
+    vulture = ("[Vulture, b]\n\n\nShield Command Burst II, Shield Harmonizing Charge\n"
+               "Shield Command Burst II, Shield Extension Charge\n")
+    assert best["objective_value"] > _ehp(wyvern.BEST_LOWS, {"command": [{"fit": vulture}]})
+    assert _ehp(best["eft"], best["conditions"]) == pytest.approx(best["objective_value"],
+                                                                 rel=1e-12)
+    assert result["applied"]["command"].startswith("chosen by the search")
+    assert chosen["searched_under"] is True
+
+
+def test_t10_a_searched_fleet_refuses_a_given_one(booted, zealot_eft):
+    with pytest.raises(ValueError, match="allow.command"):
+        search.optimize_fit(zealot_eft, "tank.ehp.total", wyvern.CONDITIONS,
+                            allow={"command": True})
+    with pytest.raises(ValueError, match="allow.phenomena must be true or false"):
+        search.optimize_fit(zealot_eft, "tank.ehp.total", allow={"phenomena": "yes"})
+
+
+def test_a_fleet_search_without_a_valid_fit_says_why(booted, no_fits_left):
+    short = search.optimize_fit(OVER_PG, "tank.ehp.total", allow={"command": True},
+                                budget={"evaluations": 1})
+    assert short["best"] == [] and short["fleet"] is None
+    assert short["reason"].startswith("the budget ran out")
+
+
+@pytest.mark.slow
+def test_replay_the_hand_tested_wyvern(booted, no_fits_left):
+    allow = {"slots": ["high", "mid", "low", "rig"], "implants": True, "boosters": True,
+             "module_states": ["active", "overheated"], "command": True, "phenomena": True}
+    result = search.optimize_fit("Wyvern", "tank.ehp.total", allow=allow, meta=["all"],
+                                 top_k=1)  # the default budget
+    assert result["search"]["converged"] is True
+    best = result["best"][0]
+    assert best["polish"]["converged"] is True
+    shield = [b for b in result["fleet"]["bursts"] if "Shield Command Burst" in b["module"]]
+    assert shield and all(b["hull"] in ("Simurgh", "Ymir") for b in shield)
+    assert result["fleet"]["phenomena"]["chosen"] == "Caldari Phenomena Generator"
+    assert not [line for line in best["eft"].splitlines()
+                if "Capsuleer" in line or line.startswith("Serenity")]
+    assert _ehp(best["eft"], best["conditions"]) == pytest.approx(best["objective_value"],
+                                                                 rel=1e-12)
+    swaps = search.marginal_swaps(best["eft"], "tank.ehp.total", best["conditions"],
+                                  meta=["all"])
+    assert swaps["no_improvement_found"] is True
+
+
+def test_a_search_under_a_fleet_measures_its_start_first(monkeypatch):
+    from pyfa_mcp.bench import Trial
+    where = ("module", 0)
+    a = search.Option("low", 1, None, "active", "A", "g")
+    b = search.Option("low", 2, None, "active", "B", "g")
+    values = {"k": 1.0, **{x: 0.0 for x in search._FITTING_KEYS}}
+    monkeypatch.setattr(search._Search, "_trials",
+                        lambda self, edits: [Trial(dict(values), []) for _ in edits])
+    main = search._Search("ref", {}, "k", 1, [], {"evaluations": 1}, float("inf"),
+                          [where], {where: "low"}, {"low": [a, b]})
+    under, finished = search._improve_under(main, {"command": []}, {where: a}, [])
+    assert finished is False  # one evaluation: the start, then the budget is gone
+    assert under.canonical({where: a}) in under.seen
+
+
+def test_best_is_ordered_by_its_confirmed_value():
+    best = [{"objective_value": 1.0, "valid": True}, {"objective_value": 3.0, "valid": True},
+            {"objective_value": 9.0, "valid": False}]
+    assert [b["objective_value"] for b in search._ordered(best, 1)] == [3.0, 1.0, 9.0]
+    assert [b["objective_value"] for b in search._ordered(best, -1)] == [1.0, 3.0, 9.0]
+
+
+def test_compact_diff_shows_heat_differences():
+    eft_text = "[Rifter, x]\nArmor EM Hardener II\n"
+    hot = {"eft": eft_text, "objective_value": 2.0, "valid": True,
+           "conditions": {"module_states": [{"module": "Armor EM Hardener II",
+                                             "state": "overheated", "count": 1}]}}
+    cold = {"eft": eft_text, "objective_value": 1.0, "valid": True, "conditions": {}}
+    diff = search._diff(hot, cold)["diff"]
+    assert diff["remove"] == [] and diff["add"] == []
+    assert diff["module_states"] == []
+    assert "module_states" not in search._diff(hot, hot)["diff"]
+
+
+def test_converged_counts_the_polish(booted, zealot_eft, no_fits_left, monkeypatch):
+    real = search._polish
+
+    def starved(s, options, budget, started):
+        out = real(s, options, budget, started)
+        s.stopped_by = "evaluations"
+        return {**out, "converged": False}
+
+    monkeypatch.setattr(search, "_polish", starved)
+    result = search.optimize_fit(zealot_eft, "tank.ehp.total", allow={"slots": ["low"]},
+                                 top_k=1)
+    assert result["search"]["converged"] is False
+    assert "budget.evaluations" in result["search"]["note"]
+
+
+def test_fleet_says_whether_the_fit_was_searched_under_it(booted, zealot_eft, no_fits_left):
+    short = search.optimize_fit(zealot_eft, "tank.ehp.total", allow={"command": True},
+                                top_k=1, budget={"evaluations": 50})
+    assert short["fleet"]["searched_under"] is False

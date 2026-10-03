@@ -1,6 +1,6 @@
 [project]
 name = "pyfa-mcp"
-version = "0.2.0"
+version = "0.3.0"
 description = "MCP server exposing Pyfa's EVE Online fitting engine to LLM clients"
 requires-python = ">=3.14,<3.15"
 license = "GPL-3.0-or-later"
@@ -39,3 +39,4 @@ pyfa_mcp = ["unhandled_effects.json"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
+markers = ["slow: replays a whole hand-tested search (minutes); skipped in CI"]

@@ -106,10 +106,10 @@ def _run(ref: str, raw: dict, keys: list[str], trials: list) -> list:
     return _cached(_TRIALS, key, lambda: pool.run(ref, raw, list(keys), trials))
 
 
-def _pool(fit, sources: set[str], meta: list[str] | None):
+def _pool(fit, sources: set[str], meta: list[str] | None, availability: str | None = None):
     subs = tuple(sorted(m.item.ID for m in fit.modules if not m.isEmpty and m.slot == 5))
-    key = (fit.ship.item.ID, subs, json.dumps(meta), tuple(sorted(sources)))
-    return _cached(_POOLS, key, lambda: candidates.build(fit, sources, meta))
+    key = (fit.ship.item.ID, subs, json.dumps(meta), tuple(sorted(sources)), availability)
+    return _cached(_POOLS, key, lambda: candidates.build(fit, sources, meta, availability))
 
 
 def _excluded_rows(excluded: list[dict]) -> list[dict]:
@@ -120,15 +120,28 @@ def _excluded_rows(excluded: list[dict]) -> list[dict]:
             for (g, r), n in sorted(by.items())]
 
 
+def _excluded_counts(excluded: list[dict]) -> dict:
+    return dict(sorted(Counter(e["reason"] for e in excluded).items()))
+
+
+def _flat(result: dict) -> dict:
+    return stats.flatten({k: v for k, v in result.items()
+                          if k not in ("fit", "ship", "applied", "warnings")})
+
+
+def _value(text: str, raw: dict, key: str) -> float:
+    return _flat(evaluate.evaluate(text, raw))[key]
+
+
 def _confirm(ref: str, raw: dict, edits) -> dict:
-    """The evaluator's numbers for the bench fit after `edits`."""
+    """The evaluator's numbers for the bench fit after `edits`, and the conditions
+    that reproduce them (EFT has no heat, so module states travel there)."""
     with bench.Bench(ref, raw) as b:
         b.apply(edits)
         text, states = b.eft(), b.module_states()
-    result = evaluate.evaluate(text, {**raw, "module_states": states})
-    flat = stats.flatten({k: v for k, v in result.items()
-                          if k not in ("fit", "ship", "applied", "warnings")})
-    return {"eft": text, "flat": flat, "result": result}
+    cond = {**raw, "module_states": states} if states else dict(raw)
+    result = evaluate.evaluate(text, cond)
+    return {"eft": text, "flat": _flat(result), "result": result, "conditions": cond}
 
 
 # --- find_modifiers ----------------------------------------------------------
@@ -185,9 +198,8 @@ def _row(c, delta, heat, baseline, replaced, problems, signs) -> dict:
               if signs[k] * d < 0 and not _zero(d, baseline[k])]
     if problems:
         notes.append("on this fit: " + "; ".join(problems[:2]))
-    if c.source == "command_burst":
-        notes.append("measured from an unbonused Ferox; a command ship, mindlink or "
-                     "booster skills give more")
+    if c.note:
+        notes.append(c.note)
     return {"name": c.name, "type_id": c.type_id, "source": c.source, "slot": c.slot,
             "charge": None if c.charge_id is None else _charge_name(c.charge_id),
             "group": c.group, "meta": c.meta, "cpu": c.cpu, "pg": c.pg,
@@ -195,7 +207,7 @@ def _row(c, delta, heat, baseline, replaced, problems, signs) -> dict:
             "delta_overheated": None if heat is None else
             {k: heat.values[k] - baseline[k] for k in delta},
             "exclusive_group": c.exclusive_group, "modifies": list(c.modifies),
-            "notes": notes}
+            "notes": notes, **({"limits": list(c.limits)} if c.limits else {})}
 
 
 def _reference(members: list[dict]) -> dict | None:
@@ -217,7 +229,8 @@ def _groups(rows: list[dict], first: str, sign: int) -> list[dict]:
         out.append({
             "group": group, "source": source, "slot": top["slot"], "variants": len(members),
             "best": {**{k: top[k] for k in ("name", "meta", "cpu", "pg", "calibration")},
-                     "delta": top["delta"]},
+                     "delta": top["delta"], **({"limits": top["limits"]} if "limits" in top
+                                              else {})},
             "reference": None if ref is None or ref is top else
             {"name": ref["name"], "meta": ref["meta"], "delta": ref["delta"]},
             "delta_range": [members[-1]["delta"][first], top["delta"][first]],
@@ -244,7 +257,9 @@ def _expand(rows: list[dict], groups: list[dict], expand: list[str] | None) -> l
 
 def find_modifiers(fit: str, stat_keys: list[str], sources: list[str] | None = None,
                    meta: list[str] | None = None, raw_conditions: dict | None = None,
-                   expand: list[str] | None = None) -> dict:
+                   expand: list[str] | None = None, availability: str | None = None,
+                   verbose: bool = False) -> dict:
+    candidates.availability_filter(availability)  # a typo fails before any work
     signs: dict[str, int] = {}
     for text in stat_keys or []:
         key, sign = _objective(text)
@@ -263,9 +278,10 @@ def find_modifiers(fit: str, stat_keys: list[str], sources: list[str] | None = N
         keys = stat_keys + [f"ship.{name}" for name, _ in caps.values()
                             if f"ship.{name}" not in stat_keys]
         baseline = b.measure(keys)
-        found = _pool(b.fit, wanted, meta)
+        found = _pool(b.fit, wanted, meta, availability)
         trials, owners = _add_trials(b, found.candidates)
-        applied = {**b.applied, "meta": found.meta_note}
+        applied = {**b.applied, "meta": found.meta_note,
+                   "availability": found.availability_note}
     results = _run(ref, raw, keys, trials)
 
     first = stat_keys[0]
@@ -312,7 +328,7 @@ def find_modifiers(fit: str, stat_keys: list[str], sources: list[str] | None = N
         "baseline": {k: baseline[k] for k in stat_keys},
         "groups": groups,
         "candidates": _expand(rows, groups, expand),
-        "excluded": _excluded_rows(found.excluded + failed),
+        "excluded": (_excluded_rows if verbose else _excluded_counts)(found.excluded + failed),
         "pinned": pinned,
         "coverage": {"items_scanned": found.scanned, "measured": len(trials),
                      "effects_unresolved": drift.unhandled_for(
@@ -341,6 +357,7 @@ class Option(NamedTuple):
     cpu: float = 0.0
     pg: float = 0.0
     calibration: float = 0.0
+    limits: tuple = ()
 
     def edit(self, where) -> Edit:
         return Edit(where, self.type_id, self.charge_id, self.state)
@@ -363,13 +380,13 @@ def _options(cands, heat: bool) -> dict[str, list[Option]]:
             if len(c.edits) == 1:  # sets are moves of their own
                 place = f"{c.source} {c.edits[0].where[1]}"
                 out.setdefault(place, []).append(
-                    Option(place, c.type_id, None, None, c.name, c.group))
+                    Option(place, c.type_id, None, None, c.name, c.group, limits=c.limits))
             continue
         for state in (("active", "overheated") if heat and c.overheat else ("active",)):
             name = c.name + (" (overheated)" if state == "overheated" else "")
             out.setdefault(c.slot, []).append(Option(c.slot, c.type_id, c.charge_id, state,
                                                      name, c.group, c.cpu, c.pg,
-                                                     c.calibration))
+                                                     c.calibration, c.limits))
     return out
 
 
@@ -401,7 +418,9 @@ def _swap_places(b, include_empty: bool, options) -> list[tuple]:
 
 def marginal_swaps(fit: str, objective: str, raw_conditions: dict | None = None,
                    meta: list[str] | None = None, include_empty_slots: bool = True,
-                   top_n: int = 10) -> dict:
+                   top_n: int = 10, availability: str | None = None,
+                   verbose: bool = False) -> dict:
+    candidates.availability_filter(availability)  # a typo fails before any work
     if top_n < 1:
         raise ValueError("top_n must be at least 1")
     key, sign = _objective(objective)
@@ -410,7 +429,7 @@ def marginal_swaps(fit: str, objective: str, raw_conditions: dict | None = None,
     with bench.Bench(ref, raw) as b:
         base = b.measure([key])[key]
         base_problems = b.problems()
-        found = _pool(b.fit, _LOCAL, meta)
+        found = _pool(b.fit, _LOCAL, meta, availability)
         options = _options(found.candidates, heat=False)
         trials, labels = [], []
         for where, occ in _swap_places(b, include_empty_slots, options):
@@ -418,17 +437,18 @@ def marginal_swaps(fit: str, objective: str, raw_conditions: dict | None = None,
             removed = None if occ is None else b.name_of(occ[0])
             if occ is not None:
                 trials.append(([Edit(where, None)], None))
-                labels.append((place, removed, None))
+                labels.append((place, removed, None, ()))
             for option in options.get(place, []):
                 if occ is not None and (option.type_id, option.charge_id) == occ[:2]:
                     continue
                 trials.append(([option.edit(where)], None))
-                labels.append((place, removed, option.name))
-        applied = {**b.applied, "meta": found.meta_note}
+                labels.append((place, removed, option.name, option.limits))
+        applied = {**b.applied, "meta": found.meta_note,
+                   "availability": found.availability_note}
     results = _run(ref, raw, [key], trials)
 
     rows, invalid, failed = [], 0, []
-    for (place, removed, added), (edits, _), trial in zip(labels, trials, results):
+    for (place, removed, added, lim), (edits, _), trial in zip(labels, trials, results):
         if trial.values is None:
             failed.append({"remove": removed, "add": added, "error": trial.error})
             continue
@@ -437,7 +457,8 @@ def marginal_swaps(fit: str, objective: str, raw_conditions: dict | None = None,
             continue
         delta = trial.values[key] - base
         rows.append({"slot": place, "remove": removed, "add": added, "delta": delta,
-                     "new_value": trial.values[key], "valid": True, "_edits": edits})
+                     "new_value": trial.values[key], "valid": True, "_edits": edits,
+                     **({"limits": list(lim)} if lim else {})})
     rows.sort(key=lambda r: (-sign * r["delta"], r["add"] or "", r["remove"] or ""))
     improving = bool(rows) and sign * rows[0]["delta"] > 0 and not _zero(rows[0]["delta"], base)
     top, warnings = rows[:top_n], []
@@ -461,17 +482,20 @@ def marginal_swaps(fit: str, objective: str, raw_conditions: dict | None = None,
     return {"applied": applied, "objective": objective, "baseline": base, "swaps": top,
             "no_improvement_found": not improving, **invalid_base, "warnings": warnings,
             "coverage": {"swaps_tried": len(trials), "invalid_dropped": invalid,
-                         "failed": failed, "excluded": _excluded_rows(found.excluded)}}
+                         "failed": failed, "excluded": (_excluded_rows if verbose else _excluded_counts)(
+                             found.excluded)}}
 
 
 # --- optimize_fit ------------------------------------------------------------
 
 _ALLOW_DEFAULT = {"slots": list(_RACKS), "implants": False, "boosters": False,
-                  "module_states": ["active"]}
+                  "module_states": ["active"], "command": False, "phenomena": False}
 _FITTING_KEYS = ("ship.cpuOutput", "ship.powerOutput", "ship.upgradeCapacity")
 _PAIR_OPTIONS = 6
+_MAIN_SHARE = 0.85  # of each budget; the polish pass gets the rest
 _METHOD = ("greedy seeds, then best-improvement local search over single swaps, "
-           "implant-set swaps and pair swaps")
+           "implant-set swaps and pair swaps, then a polish pass of single swaps over "
+           "every useful option, dominated ones included")
 
 
 class _OutOfBudget(Exception):
@@ -493,6 +517,9 @@ def _allow(allow: dict | None) -> dict:
     if "active" not in merged["module_states"]:
         raise ValueError('allow.module_states must include "active": a module is overheated '
                          'on top of being active, so heat alone is not a choice')
+    for name in ("implants", "boosters", "command", "phenomena"):
+        if not isinstance(merged[name], bool):
+            raise ValueError(f"allow.{name} must be true or false")
     return merged
 
 
@@ -686,6 +713,20 @@ class _Search:
                     following.setdefault(self.canonical(state), (state, True))
             todo = list(following.values())
 
+    def polish(self, state, swaps: list) -> dict:
+        """Best single swap until none improves. Each swap taken is appended to
+        `swaps` as (where, old option, new option, objective delta), so a budget
+        running out midway still leaves the ones made."""
+        while True:
+            current = self.evaluate([state])[0][0]
+            score, best = self.best(self.singles(state))
+            if not self.better(score, state):
+                return state
+            where = next(w for w in state if best[w] != state[w])
+            swaps.append((where, state[where], best[where],
+                          None if current is None else self.sign * (score[1] - current[1])))
+            state = best
+
     def screen(self, state) -> dict[Option, dict]:
         """Each option's effect on every searched key, put in an emptied place."""
         moves, owners = [], []
@@ -745,18 +786,180 @@ def _dominated(options: dict[str, list[Option]], deltas: dict, key: str, sign: i
     return out
 
 
+def _ranked(search) -> list:
+    """Measured valid fits, best first; fits breaking more constraints never shown."""
+    ranked = sorted(((s, st) for s, st, _ in search.seen.values() if s is not None),
+                    key=lambda p: ((-p[0][0], -p[0][1]), search.canonical(p[1])))
+    return [p for p in ranked if p[0][0] == ranked[0][0][0]] if ranked else []
+
+
+def _polish(search, options, budget, started) -> dict:
+    """Single swaps from the best fit over every useful option, dominated ones too:
+    pruning compared options on nearly empty fits, where an option can lose that
+    wins on a full one."""
+    search.left += budget["evaluations"] - max(1, int(budget["evaluations"] * _MAIN_SHARE))
+    search.deadline = started + budget["seconds"]
+    out = {"swaps_applied": [], "converged": True}
+    ranked = _ranked(search)
+    if not ranked:
+        return out
+    search.options = options
+    swaps: list = []
+    try:
+        search.polish(ranked[0][1], swaps)
+    except _OutOfBudget:
+        out["converged"] = False
+    out["swaps_applied"] = [
+        {"slot": search.place_key[w], "from": "(empty)" if old is None else old.name,
+         "to": "(empty)" if new is None else new.name, "delta": delta}
+        for w, old, new, delta in swaps]
+    return out
+
+
+_RUNNERS_UP = 3
+
+
+def _fleet(ref, raw, keys, key, sign, edits, allow, ok) -> tuple[list, dict]:
+    """The bursts and phenomena that most help the fit `edits` make. Pyfa keeps the
+    strongest value per buff, so each charge comes from its strongest source and is
+    kept if it helps on its own; phenomena are then tried on top, and none."""
+    from pyfa_mcp import fleet
+
+    def booster(source, charge):
+        return {"command": [{"fit": fleet.booster_eft(source["hull"],
+                                                      [(source["module"], charge)],
+                                                      source["mindlink"])}]}
+
+    ranked = fleet.by_charge(ok) if allow["command"] else {}
+    charges = list(ranked)
+    results = pool.run(ref, raw, keys, [(edits, None)] + [
+        (edits, booster(ranked[c][0], c)) for c in charges])
+    if results[0].values is None:
+        raise ValueError(f"Pyfa could not compute the fit: {results[0].error}")
+    base = results[0].values[key]
+    kept = []
+    for charge, trial in zip(charges, results[1:]):
+        if trial.values is None:
+            continue
+        delta = trial.values[key] - base
+        if sign * delta > 0 and not _zero(delta, base):
+            kept.append({**ranked[charge][0], "charge": charge, "delta": delta})
+    # ponytail: runners-up and phenomena ignore constraints; the final fit is
+    # confirmed with them, so a broken constraint shows as valid: false.
+    runners = [(k, s) for k in kept for s in ranked[k["charge"]][1:1 + _RUNNERS_UP]]
+    measured = pool.run(ref, raw, keys, [(edits, booster(s, k["charge"]))
+                                         for k, s in runners]) if runners else []
+    ups: dict[str, list] = {}
+    for (k, s), trial in zip(runners, measured):
+        if trial.values is not None:
+            ups.setdefault(k["charge"], []).append(
+                {"hull": s["hull"], "module": s["module"], "mindlink": s["mindlink"],
+                 "delta": trial.values[key] - base})
+    fits = fleet.booster_fits(kept)
+    command = [{"fit": text} for text in fits]
+    bursts = [{**{f: k[f] for f in ("charge", "module", "hull", "mindlink", "delta")},
+               "runners_up": ups.get(k["charge"], [])} for k in kept]
+
+    phenomena = None
+    if allow["phenomena"]:
+        generators = candidates._phenomena(ok, [])
+        tried = pool.run(ref, raw, keys, [(edits, {"command": command})] + [
+            (edits, {"command": command + g.extra["command"]}) for g in generators])
+        none = tried[0].values[key]
+        deltas = {"none": 0.0, **{g.name: t.values[key] - none
+                                  for g, t in zip(generators, tried[1:])
+                                  if t.values is not None}}
+        chosen = max(deltas, key=lambda n: (sign * deltas[n], n == "none"))
+        if chosen != "none" and _zero(deltas[chosen], none):
+            chosen = "none"
+        if chosen != "none":
+            extra = next(g for g in generators if g.name == chosen).extra["command"]
+            command += extra
+            fits = fits + [e["fit"] for e in extra]
+        phenomena = {"chosen": None if chosen == "none" else chosen, "deltas": deltas}
+    return command, {"bursts": bursts, "phenomena": phenomena, "booster_fits": fits}
+
+
+def _under(search, raw) -> "_Search":
+    """The same search, measuring under other conditions (a chosen fleet)."""
+    other = _Search(search.ref, raw, search.key, search.sign, search.cons,
+                    {"evaluations": search.left}, search.deadline, search.places,
+                    search.place_key, search.options)
+    other.top, other.full = search.top, search.full
+    other.evaluations, other.problems = search.evaluations, search.problems
+    return other
+
+
+def _improve_under(search, raw, start, sets) -> tuple:
+    """Improve `start` again under other conditions. The start is measured first,
+    so a budget running out still leaves it ranked. Returns (search, finished)."""
+    other = _under(search, raw)
+    try:
+        other.evaluate([start])
+        other.improve([start], sets)
+    except _OutOfBudget:
+        return other, False
+    return other, True
+
+
+def _ordered(best: list[dict], sign: int) -> list[dict]:
+    """Valid fits first, then by the confirmed objective: fits were ranked on the
+    bench, possibly under another fleet than the one they are confirmed with."""
+    return sorted(best, key=lambda b: (not b["valid"], -sign * b["objective_value"]))
+
+
+_NEAR_WINNERS = 20
+
+
+def _pruned_summary(pruned: dict, info: dict, best_eft: str | None) -> dict:
+    """Counts by kind, and the dominated options in an item group the best fit uses:
+    the ones that explain a choice."""
+    import eos.db
+
+    counts = Counter("dominated" if why.startswith("dominated") else "no effect"
+                     for why in pruned.values())
+    fitted = set()
+    for name in _locked_counts(best_eft)[1].values() if best_eft else ():
+        item = eos.db.getItem(name)
+        if item is not None:
+            fitted.add(item.group.name)
+    near = [{"name": n, "reason": why,
+             **({"limits": list(info[n].limits)} if info[n].limits else {})}
+            for n, why in sorted(pruned.items())
+            if why.startswith("dominated") and n in info and info[n].group in fitted]
+    return {"counts": dict(sorted(counts.items())), "near_winners": near[:_NEAR_WINNERS]}
+
+
+def _diff(first: dict, other: dict) -> dict:
+    a, b = (Counter(line for line in fit["eft"].splitlines()[1:] if line.strip())
+            for fit in (first, other))
+    diff = {"remove": sorted((a - b).elements()), "add": sorted((b - a).elements())}
+    states = other.get("conditions", {}).get("module_states", [])
+    if states != first.get("conditions", {}).get("module_states", []):
+        diff["module_states"] = states  # EFT has no heat: states tell such fits apart
+    return {"objective_value": other["objective_value"], "valid": other["valid"],
+            "diff": diff}
+
+
 def optimize_fit(fit: str, objective: str, raw_conditions: dict | None = None,
                  allow: dict | None = None, meta: list[str] | None = None,
                  locked: str | None = None, constraints: list | None = None,
-                 top_k: int = 5, budget: dict | None = None) -> dict:
+                 top_k: int = 5, budget: dict | None = None,
+                 availability: str | None = None, verbose: bool = False) -> dict:
     started = time.monotonic()
     key, sign = _objective(objective)
     allow, cons = _allow(allow), _constraints(constraints)
     _numeric([key, *(s for s, _, _ in cons)])
+    candidates.availability_filter(availability)  # a typo fails before any work
     raw = _portable(raw_conditions)
     if raw.get("module_states"):
         raise ValueError("optimize_fit chooses the modules: set heat with "
                          "allow.module_states, not conditions.module_states")
+    wants_fleet = allow["command"] or allow["phenomena"]
+    if wants_fleet and raw.get("command"):
+        raise ValueError("allow.command/allow.phenomena: the search chooses the bursts and "
+                         "phenomena; leave conditions.command empty, or turn those off")
+    ok = candidates.item_filter(meta, availability)
     if top_k < 1:
         raise ValueError("top_k must be at least 1")
     if set(budget or {}) - {"evaluations", "seconds"}:
@@ -764,14 +967,14 @@ def optimize_fit(fit: str, objective: str, raw_conditions: dict | None = None,
     for name, value in (budget or {}).items():
         if not isinstance(value, int | float) or isinstance(value, bool) or value <= 0:
             raise ValueError(f"budget.{name} must be a number above 0")
-    budget = {"evaluations": 20000, "seconds": 60, **(budget or {})}
+    budget = {"evaluations": 400_000, "seconds": 300, **(budget or {})}
     ref, left_out = _fitted(_baseline_eft(fit))
     sources = {"module", "rig", "charge"} | ({"implant"} if allow["implants"] else set()) \
         | ({"booster"} if allow["boosters"] else set())
 
     with bench.Bench(ref, raw) as b:
         b.measure([key, *(s for s, _, _ in cons)])  # unknown keys fail here
-        found = _pool(b.fit, sources, meta)
+        found = _pool(b.fit, sources, meta, availability)
         options = {pk: opts for pk, opts in
                    _options(found.candidates, "overheated" in allow["module_states"]).items()
                    if pk in allow["slots"] or pk.split()[0] in ("implant", "booster")}
@@ -801,78 +1004,119 @@ def optimize_fit(fit: str, objective: str, raw_conditions: dict | None = None,
             raise ValueError(f"locked: '{written[missing[0]]}' is not on the fit")
         options = {pk: opts for pk, opts in options.items() if pk in place_key.values()}
         applied = {**b.applied, "meta": found.meta_note,
+                   "availability": found.availability_note,
                    "heat": " and ".join(allow["module_states"]), "left_out": left_out}
+        if wants_fleet:
+            applied["command"] = "chosen by the search (see fleet)"
 
     sets = [c for c in found.candidates if c.group == "Implant sets"]
-    search = _Search(ref, raw, key, sign, cons, budget, started + budget["seconds"],
-                     places, place_key, options)
+    main_budget = {"evaluations": max(1, int(budget["evaluations"] * _MAIN_SHARE))}
+    search = _Search(ref, raw, key, sign, cons, main_budget,
+                     started + budget["seconds"] * _MAIN_SHARE, places, place_key, options)
     pruned: dict = {}
-    considered = options  # until pruning has run
+    considered = polish_options = options  # until pruning has run
     converged = True
+    searches = [search]
+    fleet_command, fleet_out, searched_under = [], None, False
     try:
-        clean = {w: None for w in places}
-        search.evaluate([start, clean])  # first, so even a tiny budget returns a fit
-        deltas = search.screen(clean)
-        order = [pk for pk in ("low", "mid", "rig", "high") if pk in options] + \
-            sorted(pk for pk in options if pk not in _RACKS)
-        useful = {o for o, d in deltas.items() if _useful(d, key, sign, cons)}
-        search.options = {pk: [o for o in opts if o in useful] for pk, opts in options.items()}
-        seed = search.greedy(clean, order)
-        search.options = {pk: [o for o in opts if o not in useful]
-                          for pk, opts in options.items()}
-        for option, delta in search.screen(seed).items():
-            if _useful(delta, key, sign, cons):
-                useful.add(option)
-                deltas.setdefault(option, delta)
-        kept = {pk: [o for o in opts if o in useful] for pk, opts in options.items()}
-        dominated = _dominated(kept, deltas, key, sign, cons)
-        for opts in options.values():
-            for o in opts:
-                if o not in useful:
-                    pruned[o.name] = ("no effect on the objective, the constraints or "
-                                      "fitting resources")
-                elif o in dominated:
-                    pruned[o.name] = dominated[o]
-        search.options = considered = {pk: [o for o in opts if o not in dominated]
-                                       for pk, opts in kept.items()}
-        search.top = {pk: sorted(opts, key=lambda o: -sign * deltas[o][key])[:_PAIR_OPTIONS]
-                      for pk, opts in search.options.items()}
-        seeds = [seed, search.greedy(clean, order[::-1])]
-        if any(o is not None for o in start.values()):
-            seeds.insert(0, start)
-        search.improve(seeds, sets)
-    except _OutOfBudget:
-        converged = False
+        try:
+            clean = {w: None for w in places}
+            search.evaluate([start, clean])  # first, so even a tiny budget returns a fit
+            deltas = search.screen(clean)
+            order = [pk for pk in ("low", "mid", "rig", "high") if pk in options] + \
+                sorted(pk for pk in options if pk not in _RACKS)
+            useful = {o for o, d in deltas.items() if _useful(d, key, sign, cons)}
+            search.options = {pk: [o for o in opts if o in useful]
+                              for pk, opts in options.items()}
+            seed = search.greedy(clean, order)
+            search.options = options  # every option again, measured on the seed this time
+            seed_deltas = search.screen(seed)
+            for option, delta in seed_deltas.items():
+                if _useful(delta, key, sign, cons):
+                    useful.add(option)
+                    deltas.setdefault(option, delta)
+            kept = {pk: [o for o in opts if o in useful] for pk, opts in options.items()}
+            polish_options = kept
+            # Pruned only when beaten on the empty fit and on the seed: on an empty
+            # hull a plain HP bonus can beat a resist bonus that wins on a full fit.
+            on_seed = _dominated(kept, seed_deltas, key, sign, cons)
+            dominated = {o: why for o, why in _dominated(kept, deltas, key, sign, cons).items()
+                         if o in on_seed}
+            for opts in options.values():
+                for o in opts:
+                    if o not in useful:
+                        pruned[o.name] = ("no effect on the objective, the constraints or "
+                                          "fitting resources")
+                    elif o in dominated:
+                        pruned[o.name] = dominated[o]
+            search.options = considered = {pk: [o for o in opts if o not in dominated]
+                                           for pk, opts in kept.items()}
+            search.top = {pk: sorted(opts, key=lambda o: -sign * deltas[o][key])[:_PAIR_OPTIONS]
+                          for pk, opts in search.options.items()}
+            seeds = [seed, search.greedy(clean, order[::-1])]
+            if any(o is not None for o in start.values()):
+                seeds.insert(0, start)
+            search.improve(seeds, sets)
+        except _OutOfBudget:
+            converged = False
+        ranked = _ranked(search)
+        if wants_fleet and ranked:
+            fleet_command, _ = _fleet(ref, raw, search.keys, key, sign,
+                                      search.edits(ranked[0][1]), allow, ok)
+            if converged:  # improve the fit under that fleet
+                under, converged = _improve_under(
+                    search, bench.merge_conditions(raw, {"command": fleet_command}),
+                    ranked[0][1], sets)
+                searches.append(under)
+                searched_under = True
+                search = under
+        polish = _polish(search, polish_options, budget, started)
+        converged = converged and polish["converged"]
+        ranked = _ranked(search)
+        if wants_fleet and ranked:  # the fleet for the fit as polished
+            fleet_command, fleet_out = _fleet(ref, raw, search.keys, key, sign,
+                                              search.edits(ranked[0][1]), allow, ok)
+            fleet_out["searched_under"] = searched_under
     finally:
-        search.stack.close()
-
-    ranked = sorted(((s, st) for s, st, _ in search.seen.values() if s is not None),
-                    key=lambda p: ((-p[0][0], -p[0][1]), search.canonical(p[1])))
-    # fits that break fewer constraints always rank first; none that break more is shown
-    ranked = [p for p in ranked if p[0][0] == ranked[0][0][0]]
+        for each in searches:
+            each.stack.close()
+    final = bench.merge_conditions(raw, {"command": fleet_command}) if fleet_command else raw
     best = []
     for score, state in ranked[:top_k]:
-        confirmed = _confirm(ref, raw, search.edits(state))
+        confirmed = _confirm(ref, final, search.edits(state))
         flat = confirmed["flat"]
         shown = list(dict.fromkeys([key, *(s for s, _, _ in cons), *stats.DEFAULT_COMPARE]))
         holds = all(_holds(flat[s], op, x) for s, op, x in cons)
-        best.append({"eft": confirmed["eft"], "objective_value": flat[key],
-                     "stats": {k: flat[k] for k in shown if k in flat},
-                     "valid": bool(flat["validity.valid"]) and holds,
-                     "warnings": confirmed["result"]["warnings"]})
-    out = {"applied": applied, "best": best}
+        entry = {"eft": confirmed["eft"], "objective_value": flat[key]}
+        if "overheated" in allow["module_states"]:
+            entry["objective_cold"] = _value(confirmed["eft"], final, key)
+        entry.update(stats={k: flat[k] for k in shown if k in flat},
+                     valid=bool(flat["validity.valid"]) and holds,
+                     warnings=confirmed["result"]["warnings"],
+                     conditions=confirmed["conditions"])
+        best.append(entry)
+    if best:
+        best[0]["polish"] = polish  # the pass ran from the top-ranked fit
+        best = _ordered(best, sign)
+    out = {"applied": applied,
+           "best": best if verbose or not best else best[:1] + [_diff(best[0], b)
+                                                              for b in best[1:]]}
+    if wants_fleet:
+        out["fleet"] = fleet_out
     if not best:
         common = search.problems.most_common(1)
         out["reason"] = (
             f"the budget ran out ({search.stopped_by}) before any valid fit was found"
             if not converged else "every fit tried was invalid"
         ) + (f"; most common problem: {common[0][0]}" if common else "")
+    info = {o.name: o for opts in options.values() for o in opts}
     return {
         **out,
-        "considered": {pk: sorted({o.name for o in opts})
+        "considered": {pk: (sorted if verbose else len)({o.name for o in opts})
                        for pk, opts in considered.items()},
-        "pruned": [{"name": n, "reason": r} for n, r in sorted(pruned.items())],
-        "excluded": _excluded_rows(found.excluded),
+        "pruned": ([{"name": n, "reason": r} for n, r in sorted(pruned.items())] if verbose
+                   else _pruned_summary(pruned, info, best[0]["eft"] if best else None)),
+        "excluded": (_excluded_rows if verbose else _excluded_counts)(found.excluded),
         "search": {"method": _METHOD, "evaluations": search.evaluations,
                    "seconds": round(time.monotonic() - started, 1),
                    "converged": converged, "stopped_by": search.stopped_by,
