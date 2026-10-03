@@ -470,8 +470,10 @@ _ALLOW_DEFAULT = {"slots": list(_RACKS), "implants": False, "boosters": False,
                   "module_states": ["active"]}
 _FITTING_KEYS = ("ship.cpuOutput", "ship.powerOutput", "ship.upgradeCapacity")
 _PAIR_OPTIONS = 6
+_MAIN_SHARE = 0.85  # of each budget; the polish pass gets the rest
 _METHOD = ("greedy seeds, then best-improvement local search over single swaps, "
-           "implant-set swaps and pair swaps")
+           "implant-set swaps and pair swaps, then a polish pass of single swaps over "
+           "every useful option, dominated ones included")
 
 
 class _OutOfBudget(Exception):
@@ -686,6 +688,20 @@ class _Search:
                     following.setdefault(self.canonical(state), (state, True))
             todo = list(following.values())
 
+    def polish(self, state, swaps: list) -> dict:
+        """Best single swap until none improves. Each swap taken is appended to
+        `swaps` as (where, old option, new option, objective delta), so a budget
+        running out midway still leaves the ones made."""
+        while True:
+            current = self.evaluate([state])[0][0]
+            score, best = self.best(self.singles(state))
+            if not self.better(score, state):
+                return state
+            where = next(w for w in state if best[w] != state[w])
+            swaps.append((where, state[where], best[where],
+                          None if current is None else self.sign * (score[1] - current[1])))
+            state = best
+
     def screen(self, state) -> dict[Option, dict]:
         """Each option's effect on every searched key, put in an emptied place."""
         moves, owners = [], []
@@ -742,6 +758,36 @@ def _dominated(options: dict[str, list[Option]], deltas: dict, key: str, sign: i
                 if no_worse and (strictly or b.sort_key() < a.sort_key()):
                     out[a] = f"dominated by {b.name}"
                     break
+    return out
+
+
+def _ranked(search) -> list:
+    """Measured valid fits, best first; fits breaking more constraints never shown."""
+    ranked = sorted(((s, st) for s, st, _ in search.seen.values() if s is not None),
+                    key=lambda p: ((-p[0][0], -p[0][1]), search.canonical(p[1])))
+    return [p for p in ranked if p[0][0] == ranked[0][0][0]] if ranked else []
+
+
+def _polish(search, options, budget, started) -> dict:
+    """Single swaps from the best fit over every useful option, dominated ones too:
+    pruning compared options on nearly empty fits, where an option can lose that
+    wins on a full one."""
+    search.left += budget["evaluations"] - max(1, int(budget["evaluations"] * _MAIN_SHARE))
+    search.deadline = started + budget["seconds"]
+    out = {"swaps_applied": [], "converged": True}
+    ranked = _ranked(search)
+    if not ranked:
+        return out
+    search.options = options
+    swaps: list = []
+    try:
+        search.polish(ranked[0][1], swaps)
+    except _OutOfBudget:
+        out["converged"] = False
+    out["swaps_applied"] = [
+        {"slot": search.place_key[w], "from": "(empty)" if old is None else old.name,
+         "to": "(empty)" if new is None else new.name, "delta": delta}
+        for w, old, new, delta in swaps]
     return out
 
 
@@ -804,52 +850,58 @@ def optimize_fit(fit: str, objective: str, raw_conditions: dict | None = None,
                    "heat": " and ".join(allow["module_states"]), "left_out": left_out}
 
     sets = [c for c in found.candidates if c.group == "Implant sets"]
-    search = _Search(ref, raw, key, sign, cons, budget, started + budget["seconds"],
-                     places, place_key, options)
+    main_budget = {"evaluations": max(1, int(budget["evaluations"] * _MAIN_SHARE))}
+    search = _Search(ref, raw, key, sign, cons, main_budget,
+                     started + budget["seconds"] * _MAIN_SHARE, places, place_key, options)
     pruned: dict = {}
-    considered = options  # until pruning has run
+    considered = polish_options = options  # until pruning has run
     converged = True
     try:
-        clean = {w: None for w in places}
-        search.evaluate([start, clean])  # first, so even a tiny budget returns a fit
-        deltas = search.screen(clean)
-        order = [pk for pk in ("low", "mid", "rig", "high") if pk in options] + \
-            sorted(pk for pk in options if pk not in _RACKS)
-        useful = {o for o, d in deltas.items() if _useful(d, key, sign, cons)}
-        search.options = {pk: [o for o in opts if o in useful] for pk, opts in options.items()}
-        seed = search.greedy(clean, order)
-        search.options = {pk: [o for o in opts if o not in useful]
-                          for pk, opts in options.items()}
-        for option, delta in search.screen(seed).items():
-            if _useful(delta, key, sign, cons):
-                useful.add(option)
-                deltas.setdefault(option, delta)
-        kept = {pk: [o for o in opts if o in useful] for pk, opts in options.items()}
-        dominated = _dominated(kept, deltas, key, sign, cons)
-        for opts in options.values():
-            for o in opts:
-                if o not in useful:
-                    pruned[o.name] = ("no effect on the objective, the constraints or "
-                                      "fitting resources")
-                elif o in dominated:
-                    pruned[o.name] = dominated[o]
-        search.options = considered = {pk: [o for o in opts if o not in dominated]
-                                       for pk, opts in kept.items()}
-        search.top = {pk: sorted(opts, key=lambda o: -sign * deltas[o][key])[:_PAIR_OPTIONS]
-                      for pk, opts in search.options.items()}
-        seeds = [seed, search.greedy(clean, order[::-1])]
-        if any(o is not None for o in start.values()):
-            seeds.insert(0, start)
-        search.improve(seeds, sets)
-    except _OutOfBudget:
-        converged = False
+        try:
+            clean = {w: None for w in places}
+            search.evaluate([start, clean])  # first, so even a tiny budget returns a fit
+            deltas = search.screen(clean)
+            order = [pk for pk in ("low", "mid", "rig", "high") if pk in options] + \
+                sorted(pk for pk in options if pk not in _RACKS)
+            useful = {o for o, d in deltas.items() if _useful(d, key, sign, cons)}
+            search.options = {pk: [o for o in opts if o in useful]
+                              for pk, opts in options.items()}
+            seed = search.greedy(clean, order)
+            search.options = options  # every option again, measured on the seed this time
+            seed_deltas = search.screen(seed)
+            for option, delta in seed_deltas.items():
+                if _useful(delta, key, sign, cons):
+                    useful.add(option)
+                    deltas.setdefault(option, delta)
+            kept = {pk: [o for o in opts if o in useful] for pk, opts in options.items()}
+            polish_options = kept
+            # Pruned only when beaten on the empty fit and on the seed: on an empty
+            # hull a plain HP bonus can beat a resist bonus that wins on a full fit.
+            on_seed = _dominated(kept, seed_deltas, key, sign, cons)
+            dominated = {o: why for o, why in _dominated(kept, deltas, key, sign, cons).items()
+                         if o in on_seed}
+            for opts in options.values():
+                for o in opts:
+                    if o not in useful:
+                        pruned[o.name] = ("no effect on the objective, the constraints or "
+                                          "fitting resources")
+                    elif o in dominated:
+                        pruned[o.name] = dominated[o]
+            search.options = considered = {pk: [o for o in opts if o not in dominated]
+                                           for pk, opts in kept.items()}
+            search.top = {pk: sorted(opts, key=lambda o: -sign * deltas[o][key])[:_PAIR_OPTIONS]
+                          for pk, opts in search.options.items()}
+            seeds = [seed, search.greedy(clean, order[::-1])]
+            if any(o is not None for o in start.values()):
+                seeds.insert(0, start)
+            search.improve(seeds, sets)
+        except _OutOfBudget:
+            converged = False
+        polish = _polish(search, polish_options, budget, started)
     finally:
         search.stack.close()
 
-    ranked = sorted(((s, st) for s, st, _ in search.seen.values() if s is not None),
-                    key=lambda p: ((-p[0][0], -p[0][1]), search.canonical(p[1])))
-    # fits that break fewer constraints always rank first; none that break more is shown
-    ranked = [p for p in ranked if p[0][0] == ranked[0][0][0]]
+    ranked = _ranked(search)
     best = []
     for score, state in ranked[:top_k]:
         confirmed = _confirm(ref, raw, search.edits(state))
@@ -860,6 +912,8 @@ def optimize_fit(fit: str, objective: str, raw_conditions: dict | None = None,
                      "stats": {k: flat[k] for k in shown if k in flat},
                      "valid": bool(flat["validity.valid"]) and holds,
                      "warnings": confirmed["result"]["warnings"]})
+    if best:
+        best[0]["polish"] = polish
     out = {"applied": applied, "best": best}
     if not best:
         common = search.problems.most_common(1)

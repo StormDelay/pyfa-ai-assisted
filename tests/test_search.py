@@ -429,3 +429,27 @@ def test_optimize_measures_in_pieces_and_says_why_it_stopped(booted, zealot_eft,
     assert result["search"]["stopped_by"] == "seconds"
     assert "budget.seconds" in result["search"]["note"]
     assert "in-process" in result["search"]["note"]
+
+
+def test_polish_takes_improving_singles_until_none_is_left():
+    s = search._Search.__new__(search._Search)
+    s.sign = 1
+    s.singles = lambda st: [{"a": st["a"] + 1}] if st["a"] < 3 else [{"a": 0}]
+    s.evaluate = lambda states: [((0, st["a"]), st, None) for st in states]
+    s.best = lambda moves: ((0, moves[0]["a"]), moves[0])
+    s.better = lambda score, state: score[1] > state["a"]
+    swaps = []
+    assert s.polish({"a": 0}, swaps) == {"a": 3}
+    assert swaps == [("a", 0, 1, 1), ("a", 1, 2, 1), ("a", 2, 3, 1)]
+
+
+def test_t1_a_resist_booster_is_not_pruned_on_an_empty_hull(booted, no_fits_left):
+    # On a bare Wyvern G-5 beats B-5; on this fit B-5 wins (166.60M vs 166.29M).
+    result = search.optimize_fit(wyvern.BEST_LOWS, "tank.ehp.total",
+                                 allow={"slots": ["low", "mid", "rig"], "boosters": True},
+                                 locked="\n".join(wyvern.POD), meta=["all"], top_k=1,
+                                 budget={"seconds": 600})
+    best = result["best"][0]
+    assert "Halcyon B-5 Booster" in best["eft"].splitlines()
+    assert "Halcyon G-5 Booster" not in best["eft"].splitlines()
+    assert best["polish"]["converged"] is True
