@@ -568,3 +568,24 @@ def test_a_fleet_search_without_a_valid_fit_says_why(booted, no_fits_left):
                                 budget={"evaluations": 1})
     assert short["best"] == [] and short["fleet"] is None
     assert short["reason"].startswith("the budget ran out")
+
+
+@pytest.mark.slow
+def test_replay_the_hand_tested_wyvern(booted, no_fits_left):
+    allow = {"slots": ["high", "mid", "low", "rig"], "implants": True, "boosters": True,
+             "module_states": ["active", "overheated"], "command": True, "phenomena": True}
+    result = search.optimize_fit("Wyvern", "tank.ehp.total", allow=allow, meta=["all"],
+                                 top_k=1, budget={"seconds": 1800, "evaluations": 400_000})
+    assert result["search"]["converged"] is True
+    best = result["best"][0]
+    assert best["polish"]["converged"] is True
+    shield = [b for b in result["fleet"]["bursts"] if "Shield Command Burst" in b["module"]]
+    assert shield and all(b["hull"] in ("Simurgh", "Ymir") for b in shield)
+    assert result["fleet"]["phenomena"]["chosen"] == "Caldari Phenomena Generator"
+    assert not [line for line in best["eft"].splitlines()
+                if "Capsuleer" in line or line.startswith("Serenity")]
+    assert _ehp(best["eft"], best["conditions"]) == pytest.approx(best["objective_value"],
+                                                                 rel=1e-12)
+    swaps = search.marginal_swaps(best["eft"], "tank.ehp.total", best["conditions"],
+                                  meta=["all"])
+    assert swaps["no_improvement_found"] is True
