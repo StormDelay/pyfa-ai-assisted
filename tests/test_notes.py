@@ -45,3 +45,8 @@ def test_t7_compare_rows_carry_notes(booted, no_fits_left):
     for row in table["rows"]:
         by_fit.setdefault(row["fit"], []).append(len(row["notes"]))
     assert by_fit == {"a": [1, 1], "b": [0, 0]}
+
+
+def test_heavy_fit_note_does_not_only_blame_the_propmod(booted, no_fits_left):
+    (note,) = _notes("[Rokh, anchored]\n500MN Microwarpdrive II\n\n\n\nLarge Higgs Anchor I\n")
+    assert "lighter fit" in note

@@ -49,6 +49,15 @@ def _describe(axis) -> str:
 
 def guide(role: str | None = None, tank: str | None = None, space: str | None = None,
           pilots: int | None = None) -> dict:
+    try:
+        return _guide(role, tank, space, pilots)
+    except (KeyError, TypeError, AttributeError, yaml.YAMLError) as exc:
+        # the YAML is hand-edited: say where the problem is, not just "error"
+        raise ValueError(f"{GUIDE.name} is malformed ({type(exc).__name__}: {exc}); "
+                         "fix it and restart the server") from exc
+
+
+def _guide(role, tank, space, pilots) -> dict:
     data = _data()
     role = _choice(role, data["roles"], "role")
     axes = {"tank": _choice(tank, data["axes"]["tank"], "tank"),

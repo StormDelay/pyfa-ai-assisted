@@ -101,3 +101,20 @@ def test_t5_suggested_conditions_and_constraints_are_usable(booted, zealot_eft, 
     neuted = evaluate.evaluate(
         zealot_eft, data["roles"]["fleet_mainline"]["suggested"]["conditions"])["capacitor"]
     assert neuted["delta_per_s"] < calm["delta_per_s"]
+
+
+def test_malformed_yaml_names_the_file(tmp_path, monkeypatch):
+    bad = tmp_path / "fitting_guide.yaml"
+    bad.write_text("roles:\n  fleet_x: {summary: s, principles: [{text: t}]}\n"
+                   "axes: {tank: {}, space: {}, pilots: p}\ngeneral: []\n", encoding="utf-8")
+    monkeypatch.setattr(guide, "GUIDE", bad)
+    guide._data.cache_clear()
+    try:
+        with pytest.raises(ValueError, match="fitting_guide.yaml.*restart"):
+            guide.guide("fleet_x")
+        bad.write_text("roles: [unclosed\n", encoding="utf-8")
+        guide._data.cache_clear()
+        with pytest.raises(ValueError, match="fitting_guide.yaml"):
+            guide.guide()
+    finally:
+        guide._data.cache_clear()

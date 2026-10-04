@@ -14,7 +14,8 @@ def propmod_note(name: str, rated: float, thrust: float, mass: float) -> str | N
     if gain >= PROPMOD_RATIO * rated:
         return None
     return (f"{name} gives +{gain:.0f}% speed of its rated +{rated:.0f}%: too little "
-            "thrust for this hull's mass; a larger propmod gives more")
+            "thrust for this fit's mass (hull plus plates, anchors and other mass); a "
+            "larger propmod or a lighter fit gives more")
 
 
 def for_fit(fit) -> list[str]:
