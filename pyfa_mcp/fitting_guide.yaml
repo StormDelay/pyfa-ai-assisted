@@ -147,6 +147,8 @@ roles:
     principles:
       - text: "Tackle holds targets for the mainline: point and scram ranges must reach where the fleet fights."
         why: "A target that warps off wastes the fleet's damage."
+      - text: "Spending more on longer-range webs, points and scrams (Faction or Deadspace) is often worth it; the search tools leave Deadspace out unless meta=[\"all\"]."
+        why: "Range decides whether tackle lands at all, and support is a small share of the fleet's cost."
       - text: "Webs and target painters are damage application: a slower, bigger target takes more of the mainline's damage. Measure it with conditions.target set to the webbed or painted target's speed and signature; find bonused hulls with list_ships(bonus=\"Stasis Webifier\") or list_ships(bonus=\"Target Painter\")."
         why: "They turn the fleet's paper DPS into applied DPS, and webs also stop kiting."
       - text: "EWAR is chosen for the opponent: jammers of the enemy's racial sensor type, tracking or guidance disruptors by the enemy's weapons, damps against long lock ranges. Its value doesn't show in DPS or EHP: judge it by its effect on the target (fit_graph's ewar graph shows strength by distance)."
