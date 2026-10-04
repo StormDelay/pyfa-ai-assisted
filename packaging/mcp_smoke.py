@@ -17,7 +17,7 @@ import sys
 TOOLS = {"search_items", "list_ships", "item_info", "whats_new", "evaluate_fit", "compare_fits",
          "fit_graph", "graph_options", "conditions_format", "status", "save_fit",
          "list_fits", "get_fit", "delete_fit", "export_to_pyfa", "find_modifiers",
-         "marginal_swaps", "optimize_fit"}
+         "marginal_swaps", "optimize_fit", "fitting_guide"}
 FIT = "[Rifter, smoke]\n200mm AutoCannon II, EMP S\n"
 # One call per subsystem a frozen build could miss an import for: eos (evaluate),
 # drift (status), graphs, conditions.
@@ -27,6 +27,8 @@ CALLS = (
     ("fit_graph", {"fit": FIT, "graph": "lock_time", "x": "tgtSigRad", "y": "time",
                    "x_range": [10, 1000]}),
     ("conditions_format", {}),
+    # reads fitting_guide.yaml: fails if the frozen build left the data file out
+    ("fitting_guide", {"role": "fleet_mainline"}),
     # >300 trials, so it runs through worker processes when the server has them
     ("find_modifiers", {"fit": "Rifter", "stats": ["tank.ehp.total"], "sources": ["module"]}),
 )
