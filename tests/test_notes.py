@@ -50,3 +50,21 @@ def test_t7_compare_rows_carry_notes(booted, no_fits_left):
 def test_heavy_fit_note_does_not_only_blame_the_propmod(booted, no_fits_left):
     (note,) = _notes("[Rokh, anchored]\n500MN Microwarpdrive II\n\n\n\nLarge Higgs Anchor I\n")
     assert "lighter fit" in note
+
+
+def test_evaluate_lists_the_hull_bonuses(booted, no_fits_left):
+    bonuses = evaluate.evaluate("[Nightmare, x]\n", None)["hull_bonuses"]
+    assert any("Afterburner velocity" in line for line in bonuses)
+    assert any(line.endswith("(per skill level)") for line in bonuses)
+
+
+def test_burst_outside_the_hulls_families_and_no_mindlink(booted, no_fits_left):
+    found = _notes("[Damnation, off family]\nShield Command Burst II\n")
+    assert any("no command mindlink" in n for n in found)
+    (off,) = [n for n in found if n.startswith("Shield Command Burst II")]
+    assert "Armored Command" in off and "Information Command" in off
+
+
+def test_bonused_bursts_with_a_mindlink_are_quiet(booted, no_fits_left):
+    assert _notes("[Damnation, right]\nArmor Command Burst II\nInformation Command Burst II\n\n"
+                  "Imperial Navy Command Mindlink\n") == []

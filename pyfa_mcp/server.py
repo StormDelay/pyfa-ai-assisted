@@ -42,8 +42,9 @@ pyfa-mcp computes EVE Online fits with Pyfa's own engine.
 - Every result has `applied` (what the numbers assume) and `warnings`.
   Tell the user about warnings, and mention the assumptions that matter.
   evaluate_fit and compare_fits also give `notes`: likely fitting mistakes
-  (e.g. a propmod too small for the hull). Fix them, or tell the user why
-  the fit deliberately keeps one.
+  (e.g. a propmod too small for the hull, a burst the hull doesn't bonus).
+  Fix them, or tell the user why the fit deliberately keeps one.
+  evaluate_fit's `hull_bonuses` lists what the hull is built for: fit to it.
 - Use compare_fits to evaluate many candidate fits in one call.
 - Call status() if numbers look wrong; relay any warning it reports.
 - export_to_pyfa writes into the user's own Pyfa. Call it only when the
@@ -67,7 +68,9 @@ pyfa-mcp computes EVE Online fits with Pyfa's own engine.
   not be the best and offer to search longer.
 - The game data may be newer than your training. Find ships and items
   with the tools (list_ships can_fit/bonus, find_modifiers, whats_new),
-  never from memory.
+  never from memory. The same goes for what fits with what: which charges
+  a module takes is in item_info charges, and evaluate_fit's validity says
+  whether a fit works.
 - Walk conditions_format()["beyond_the_fit"] (pod, drugs, links, phenomena,
   projected, environment, heat, mode) and tell the user which of those you
   assumed, set, or left out.
@@ -151,7 +154,8 @@ def list_ships(group: str | None = None, race: str | None = None,
 @app.tool()
 @_tool
 def item_info(name: str) -> dict:
-    """All attributes and the trait/bonus text of one item (ship, module, charge...)."""
+    """All attributes and the trait/bonus text of one item (ship, module, charge...),
+    and for a module that takes charges, every charge it accepts (`charges`)."""
     return catalog.item_info(name)
 
 
@@ -173,8 +177,9 @@ def evaluate_fit(fit: str, conditions: dict | None = None) -> dict:
     """Full stats of one fit (EFT text or stored fit name/id) under conditions:
     validity (cpu/pg/calibration/slots/hardpoints), tank (hp, ehp, resists,
     repair), offense (dps/volley), capacitor, navigation, targeting, drones,
-    plus `applied`, `warnings` and `notes` (likely fitting mistakes). Modules
-    that do not fit are left out and listed as validity problems.
+    plus `applied`, `warnings`, `notes` (likely fitting mistakes) and
+    `hull_bonuses` (the hull's trait lines: fit to them). Modules that do not
+    fit are left out and listed as validity problems.
     To check whether a fit can be improved, use marginal_swaps."""
     return evaluate.evaluate(fit, conditions)
 
