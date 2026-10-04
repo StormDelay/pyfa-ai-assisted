@@ -16,7 +16,7 @@ def _case(name):
 
 def _flat(result):
     return stats.flatten({k: v for k, v in result.items()
-                          if k not in ("fit", "ship", "applied", "warnings")})
+                          if k not in ("fit", "ship", "applied", "warnings", "notes")})
 
 
 def _same(got, want):

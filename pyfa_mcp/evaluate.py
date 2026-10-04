@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import json
 
-from pyfa_mcp import conditions, drift, eft, eosboot, stats, store
+from pyfa_mcp import conditions, drift, eft, eosboot, notes, stats, store
 
 
 class Scratch:
@@ -46,9 +46,10 @@ def _evaluate_parsed(ref: str, cond) -> dict:
         result = stats.fit_stats(fit, conditions.spool_of(cond))
         name, ship = fit.name, fit.ship.item.name
         effect_warnings = drift.effect_warnings(fit)
+        fit_notes = notes.for_fit(fit)
     return {"fit": name, "ship": ship, "applied": applied,
             "warnings": warnings_for(result) + effect_warnings + store.pyfa_warnings(ref),
-            **result}
+            "notes": fit_notes, **result}
 
 
 def evaluate(ref: str, raw_conditions: dict | None) -> dict:
@@ -87,12 +88,13 @@ def compare(refs: list[str], raw_conditions: dict | None,
                 continue
             applied = applied or result["applied"]
             flat = stats.flatten({k: v for k, v in result.items()
-                                  if k not in ("fit", "ship", "applied", "warnings")})
+                                  if k not in ("fit", "ship", "applied", "warnings", "notes")})
             unknown = [k for k in keys if k not in flat]
             if unknown:
                 raise ValueError(f"unknown stat '{unknown[0]}'; stat keys look like "
                                  f"{', '.join(stats.DEFAULT_COMPARE[:3])}")
             rows.append({"fit": result["fit"], "ship": result["ship"], **label,
-                         **{k: flat[k] for k in keys}, "warnings": result["warnings"]})
+                         **{k: flat[k] for k in keys}, "warnings": result["warnings"],
+                         "notes": result["notes"]})
     columns = ["fit", *(["variant"] if variants else []), *keys]
     return {"applied": applied, "columns": columns, "rows": rows}

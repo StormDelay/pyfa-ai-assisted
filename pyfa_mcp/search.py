@@ -126,7 +126,7 @@ def _excluded_counts(excluded: list[dict]) -> dict:
 
 def _flat(result: dict) -> dict:
     return stats.flatten({k: v for k, v in result.items()
-                          if k not in ("fit", "ship", "applied", "warnings")})
+                          if k not in ("fit", "ship", "applied", "warnings", "notes")})
 
 
 def _value(text: str, raw: dict, key: str) -> float:
