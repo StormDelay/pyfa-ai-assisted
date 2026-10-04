@@ -325,9 +325,11 @@ def fitting_guide(role: str | None = None, tank: str | None = None,
     and constraints for evaluate_fit / compare_fits / optimize_fit, and `unset`:
     the axes not given that would change the advice (ask the user, or say what
     you assumed). Principles are defaults with reasons: a fit may break one
-    deliberately, and should say why."""
+    deliberately, and should say why. The user can edit their own copy (see
+    `customize` in the no-role listing)."""
     try:
-        return guide.guide(role, tank, space, pilots)
+        return guide.guide(role, tank, space, pilots,
+                           _data_dir or eosboot.default_data_dir())
     except ValueError as exc:
         raise ToolError(str(exc)) from exc
 

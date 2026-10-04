@@ -1,5 +1,8 @@
 """Fleet fitting principles from fitting_guide.yaml, filtered by tank layer,
-space and fleet size. Plain data: never boots Pyfa."""
+space and fleet size. Plain data: never boots Pyfa.
+
+The user's own copy in the data dir (~/.pyfa-mcp/fitting_guide.yaml) replaces
+the bundled one, and is re-read whenever it changes: no restart, no rebuild."""
 from __future__ import annotations
 
 import functools
@@ -12,9 +15,14 @@ GUIDE = Path(__file__).with_name("fitting_guide.yaml")
 AXES_OF_WHEN = {"tank": "tank", "space": "space", "min_pilots": "pilots", "max_pilots": "pilots"}
 
 
-@functools.cache
-def _data() -> dict:
-    return yaml.safe_load(GUIDE.read_text(encoding="utf-8"))
+def _source(data_dir: Path | None) -> Path:
+    mine = Path(data_dir) / GUIDE.name if data_dir else None
+    return mine if mine and mine.is_file() else GUIDE
+
+
+@functools.lru_cache(maxsize=4)
+def _load(path: Path, mtime_ns: int) -> dict:
+    return yaml.safe_load(path.read_text(encoding="utf-8"))
 
 
 def _choice(value: str | None, options, label: str) -> str | None:
@@ -48,17 +56,21 @@ def _describe(axis) -> str:
 
 
 def guide(role: str | None = None, tank: str | None = None, space: str | None = None,
-          pilots: int | None = None) -> dict:
+          pilots: int | None = None, data_dir: Path | None = None) -> dict:
+    source = _source(data_dir)
     try:
-        return _guide(role, tank, space, pilots)
+        result = _guide(_load(source, source.stat().st_mtime_ns), role, tank, space, pilots)
     except (KeyError, TypeError, AttributeError, yaml.YAMLError) as exc:
         # the YAML is hand-edited: say where the problem is, not just "error"
-        raise ValueError(f"{GUIDE.name} is malformed ({type(exc).__name__}: {exc}); "
-                         "fix it and restart the server") from exc
+        raise ValueError(f"{source} is malformed ({type(exc).__name__}: {exc})") from exc
+    result["source"] = str(source)
+    if role is None:
+        result["customize"] = (f"copy {GUIDE} to {Path(data_dir or '.') / GUIDE.name} and "
+                               "edit it; changes apply on the next call")
+    return result
 
 
-def _guide(role, tank, space, pilots) -> dict:
-    data = _data()
+def _guide(data, role, tank, space, pilots) -> dict:
     role = _choice(role, data["roles"], "role")
     axes = {"tank": _choice(tank, data["axes"]["tank"], "tank"),
             "space": _choice(space, data["axes"]["space"], "space"),

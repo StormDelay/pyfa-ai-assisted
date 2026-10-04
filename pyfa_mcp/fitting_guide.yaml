@@ -1,6 +1,8 @@
-# Fleet fitting principles for the fitting_guide tool. Maintained by hand:
-# edit freely, no code change needed. Each principle is a default with its
-# reason, not a rule; a fit may break one deliberately and say why.
+# Fleet fitting principles for the fitting_guide tool. Maintained by hand.
+# To customize, copy this file to the server's data dir (~/.pyfa-mcp, or
+# --data-dir) and edit the copy: it replaces this one and is re-read on every
+# change. Each principle is a default with its reason, not a rule; a fit may
+# break one deliberately and say why.
 # when: tank (armor|shield), space (nullsec|lowsec|wormhole, or a list),
 # min_pilots / max_pilots (fleet size). A tagged principle shows only when
 # every key matches the axes passed to fitting_guide.

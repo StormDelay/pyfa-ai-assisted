@@ -119,3 +119,11 @@ def test_instructions_point_at_the_guide_and_notes():
     assert "fitting_guide" in server.INSTRUCTIONS
     assert "starting point" in server.INSTRUCTIONS
     assert "`notes`" in server.INSTRUCTIONS
+
+
+def test_fitting_guide_reads_the_servers_data_dir(tmp_path, monkeypatch):
+    (tmp_path / "fitting_guide.yaml").write_text(
+        "axes: {tank: {armor: a}, space: {nullsec: n}, pilots: p}\ngeneral: []\n"
+        "roles: {fleet_mine: {summary: mine, principles: []}}\n", encoding="utf-8")
+    monkeypatch.setattr(server, "_data_dir", tmp_path)
+    assert set(server.fitting_guide()["roles"]) == {"fleet_mine"}

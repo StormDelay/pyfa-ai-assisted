@@ -103,18 +103,42 @@ def test_t5_suggested_conditions_and_constraints_are_usable(booted, zealot_eft, 
     assert neuted["delta_per_s"] < calm["delta_per_s"]
 
 
-def test_malformed_yaml_names_the_file(tmp_path, monkeypatch):
-    bad = tmp_path / "fitting_guide.yaml"
-    bad.write_text("roles:\n  fleet_x: {summary: s, principles: [{text: t}]}\n"
-                   "axes: {tank: {}, space: {}, pilots: p}\ngeneral: []\n", encoding="utf-8")
-    monkeypatch.setattr(guide, "GUIDE", bad)
-    guide._data.cache_clear()
-    try:
-        with pytest.raises(ValueError, match="fitting_guide.yaml.*restart"):
-            guide.guide("fleet_x")
-        bad.write_text("roles: [unclosed\n", encoding="utf-8")
-        guide._data.cache_clear()
-        with pytest.raises(ValueError, match="fitting_guide.yaml"):
-            guide.guide()
-    finally:
-        guide._data.cache_clear()
+MINIMAL = ("axes: {tank: {armor: a}, space: {nullsec: n}, pilots: p}\n"
+           "general: []\n"
+           "roles: {fleet_x: {summary: %s, principles: []}}\n")
+
+
+def test_malformed_yaml_names_the_file(tmp_path):
+    mine = tmp_path / "fitting_guide.yaml"
+    mine.write_text("roles:\n  fleet_x: {summary: s, principles: [{text: t}]}\n"
+                    "axes: {tank: {}, space: {}, pilots: p}\ngeneral: []\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="fitting_guide.yaml.*malformed"):
+        guide.guide("fleet_x", data_dir=tmp_path)
+    mine.write_text("roles: [unclosed\n", encoding="utf-8")
+    _touch_later(mine)
+    with pytest.raises(ValueError, match="fitting_guide.yaml"):
+        guide.guide(data_dir=tmp_path)
+
+
+def _touch_later(path, seconds=5):
+    import os
+    st = path.stat()
+    os.utime(path, ns=(st.st_atime_ns, st.st_mtime_ns + seconds * 10**9))
+
+
+def test_override_in_data_dir_wins_and_reloads_on_edit(tmp_path):
+    mine = tmp_path / "fitting_guide.yaml"
+    mine.write_text(MINIMAL % "first", encoding="utf-8")
+    result = guide.guide(data_dir=tmp_path)
+    assert result["roles"] == {"fleet_x": "first"} and result["source"] == str(mine)
+    mine.write_text(MINIMAL % "second", encoding="utf-8")
+    _touch_later(mine)
+    assert guide.guide("fleet_x", data_dir=tmp_path)["summary"] == "second"
+
+
+def test_without_override_the_bundled_guide_says_how_to_customize(tmp_path):
+    result = guide.guide(data_dir=tmp_path)
+    assert result["source"] == str(guide.GUIDE)
+    assert str(guide.GUIDE) in result["customize"]
+    assert str(tmp_path / "fitting_guide.yaml") in result["customize"]
+    assert guide.guide("fleet_mainline", data_dir=tmp_path)["source"] == str(guide.GUIDE)
