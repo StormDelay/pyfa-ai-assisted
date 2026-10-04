@@ -34,7 +34,7 @@ build-backend = "setuptools.build_meta"
 include = ["pyfa_mcp*"]
 
 [tool.setuptools.package-data]
-pyfa_mcp = ["unhandled_effects.json"]
+pyfa_mcp = ["unhandled_effects.json", "fitting_guide.yaml"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

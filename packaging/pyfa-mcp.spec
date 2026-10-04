@@ -43,6 +43,7 @@ if built != declared:
 datas = [(str(PYFA / package), f"pyfa/{package}") for package in pyfa_imports.PACKAGES]
 datas += [(str(PYFA / name), "pyfa") for name in ("config.py", "version.yml", "eve.db")]
 datas += [(str(ROOT / "pyfa_mcp" / "unhandled_effects.json"), "pyfa_mcp")]
+datas += [(str(ROOT / "pyfa_mcp" / "fitting_guide.yaml"), "pyfa_mcp")]
 datas += copy_metadata("pyfa-mcp")
 
 hiddenimports = pyfa_imports.hidden_imports()
