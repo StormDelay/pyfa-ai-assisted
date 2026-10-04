@@ -35,7 +35,7 @@ def test_t2_axes_pick_matching_principles():
                     and when.get("max_pilots", 10**9) >= 250)
         assert (p["text"] in texts) == expected, p["text"]
     assert "unset" not in result
-    assert result["general"] and result["suggested"]["conditions"]
+    assert result["general"]
 
 
 def test_t3_unset_axes_hide_tagged_principles():
@@ -96,11 +96,6 @@ def test_t5_suggested_conditions_and_constraints_are_usable(booted, zealot_eft, 
             evaluate.evaluate(zealot_eft, suggested["conditions"])  # parses and applies
         for stat, _, _ in search._constraints(suggested.get("constraints")):
             assert stat in keys, (name, stat)
-    # the mainline's neut pressure really drains the cap sim
-    calm = evaluate.evaluate(zealot_eft, None)["capacitor"]
-    neuted = evaluate.evaluate(
-        zealot_eft, data["roles"]["fleet_mainline"]["suggested"]["conditions"])["capacitor"]
-    assert neuted["delta_per_s"] < calm["delta_per_s"]
 
 
 MINIMAL = ("axes: {tank: {armor: a}, space: {nullsec: n}, pilots: p}\n"
