@@ -17,7 +17,7 @@ from pathlib import Path
 from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 
-from pyfa_mcp import (catalog, conditions, drift, eft, eosboot, evaluate, graphs, pool,
+from pyfa_mcp import (catalog, conditions, drift, eft, eosboot, evaluate, graphs, guide, pool,
                       pyfadata, register, search, store)
 
 INSTRUCTIONS = """\
@@ -32,8 +32,18 @@ pyfa-mcp computes EVE Online fits with Pyfa's own engine.
   (active, /OFFLINE honoured), Pyfa's default spool (full), no drug side
   effects, no command bursts, nothing projected. Set the conditions that
   matter for the user's question; call conditions_format() for the schema.
+- Before building, optimizing or judging a fit, settle what it is for; ask
+  the user when that isn't clear. For fleet fits and doctrines call
+  fitting_guide with the role and whatever the user said about tank layer,
+  space and fleet size, say which of those you assumed, and evaluate and
+  optimize under its `suggested` conditions and constraints. A fit that
+  maximizes one stat under default conditions is a starting point, not a
+  recommendation.
 - Every result has `applied` (what the numbers assume) and `warnings`.
   Tell the user about warnings, and mention the assumptions that matter.
+  evaluate_fit and compare_fits also give `notes`: likely fitting mistakes
+  (e.g. a propmod too small for the hull). Fix them, or tell the user why
+  the fit deliberately keeps one.
 - Use compare_fits to evaluate many candidate fits in one call.
 - Call status() if numbers look wrong; relay any warning it reports.
 - export_to_pyfa writes into the user's own Pyfa. Call it only when the
@@ -163,8 +173,8 @@ def evaluate_fit(fit: str, conditions: dict | None = None) -> dict:
     """Full stats of one fit (EFT text or stored fit name/id) under conditions:
     validity (cpu/pg/calibration/slots/hardpoints), tank (hp, ehp, resists,
     repair), offense (dps/volley), capacitor, navigation, targeting, drones,
-    plus `applied` and `warnings`. Modules that do not fit are left out and
-    listed as validity problems.
+    plus `applied`, `warnings` and `notes` (likely fitting mistakes). Modules
+    that do not fit are left out and listed as validity problems.
     To check whether a fit can be improved, use marginal_swaps."""
     return evaluate.evaluate(fit, conditions)
 
@@ -301,6 +311,27 @@ def conditions_format() -> dict:
     """The `conditions` schema with examples, and the names of Pyfa's built-in
     damage and target profiles."""
     return conditions.describe()
+
+
+@app.tool()
+def fitting_guide(role: str | None = None, tank: str | None = None,
+                  space: str | None = None, pilots: int | None = None) -> dict:
+    """Fleet fitting principles, each with its reason. Call it before building,
+    optimizing or judging a fleet fit or doctrine. No role: the general
+    principles, the roles (fleet_doctrine, fleet_mainline, fleet_logistics,
+    fleet_command, fleet_support) and the axes. With a role, pass what the user
+    said: tank (armor, shield), space (nullsec, lowsec, wormhole), pilots (fleet
+    size). Returns the role's principles for that fleet, `suggested` conditions
+    and constraints for evaluate_fit / compare_fits / optimize_fit, and `unset`:
+    the axes not given that would change the advice (ask the user, or say what
+    you assumed). Principles are defaults with reasons: a fit may break one
+    deliberately, and should say why. The user can edit their own copy (see
+    `customize` in the no-role listing)."""
+    try:
+        return guide.guide(role, tank, space, pilots,
+                           _data_dir or eosboot.default_data_dir())
+    except ValueError as exc:
+        raise ToolError(str(exc)) from exc
 
 
 @app.tool()

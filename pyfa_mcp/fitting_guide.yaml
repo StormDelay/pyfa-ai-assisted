@@ -1,0 +1,165 @@
+# Fleet fitting principles for the fitting_guide tool. Maintained by hand.
+# To customize, copy this file to the server's data dir (~/.pyfa-mcp, or
+# --data-dir) and edit the copy: it replaces this one and is re-read on every
+# change. Each principle is a default with its reason, not a rule; a fit may
+# break one deliberately and say why.
+# when: tank (armor|shield), space (nullsec|lowsec|wormhole, or a list),
+# min_pilots / max_pilots (fleet size). A tagged principle shows only when
+# every key matches the axes passed to fitting_guide.
+
+axes:
+  tank:
+    armor: "slower, heavier buffer; mids free for tackle and EWAR; armor logi and links"
+    shield: "faster; lows free for damage and speed; shield logi and links"
+  space:
+    nullsec: "bubbles, bombers (void bombs empty whole fleets' cap: a mid-slot cap booster is usually very valuable), capital drops including supers and titans"
+    lowsec: "no bubbles, capital drops including supers and titans, gate guns matter for small gangs, expensive doctrines fly blingier pods"
+    wormhole: "hole mass and ship-size limits, system environment effects, capital escalation"
+  pilots: "fleet size; changes how much alpha, bombers and per-pilot utility matter"
+
+general:
+  - text: "Size propulsion to the hull: a propmod's speed gain falls with hull mass. evaluate_fit's notes flag one giving under half its rating."
+    why: "An undersized propmod is legal but nearly useless; the ship can't keep up with the fleet."
+  - text: "Tank one layer and commit the slots, rigs and resists to it."
+    why: "Split shield and armor modules give neither layer enough to matter, and hull bonuses favour one layer."
+  - text: "Know the weakest resist of the tank layer, against the damage the enemy actually deals."
+    why: "The enemy picks the damage type you are weakest to; uniform damage hides that."
+  - text: "Count only damage that applies at the engagement range: turrets within optimal plus falloff, missiles within flight range, with the ammo you will load; drones within drone control range."
+    why: "Paper DPS that can't reach the target isn't DPS. fit_graph's damage graph shows DPS by distance."
+  - text: "Know how long the capacitor lasts with everything you will run, under the pressure you expect."
+    why: "A fit that runs dry mid-fight loses its guns, tank and propulsion."
+  - text: "Evaluate under the fight's conditions, not the defaults: damage_profile for the enemy, target for what you shoot, projected for the neuts and webs you will take."
+    why: "The defaults (uniform damage, no target, nothing projected) reward paper DPS and EHP."
+
+roles:
+  fleet_doctrine:
+    summary: "The whole fleet: mainline, logistics, links and support built to one plan."
+    principles:
+      - text: "One tank layer for the whole fleet."
+        why: "Logi repairs one layer, links boost one layer, and one resist profile keeps the fleet predictable for its own logi."
+      - text: "One engagement range band; every mainline weapon and ammo choice serves it."
+        why: "The FC can hold one range; ships built for another band do no damage."
+      - text: "One mainline hull, or a few with matching speed, range and tank."
+        why: "The fleet moves at its slowest ship's speed and can only hold range together."
+      - text: "About one logi per 5 to 8 mainline ships."
+        why: "Fewer and the fleet bleeds ships to sustained DPS; more and it lacks the damage to win."
+      - text: "Links for the doctrine's layer (armor or shield bursts), plus skirmish for speed and sig, and information for lock range; a second booster as a spare."
+        why: "Bursts multiply the whole fleet's tank and range; a lone booster is a primary target."
+      - text: "Support matched to the plan: tackle and webs for a brawl, EWAR and anti-support for a kite or a snipe. Webs and target painters are damage application: a slower, bigger target takes more of the mainline's damage. Measure it by setting conditions.target to the webbed or painted target's speed and signature."
+        why: "Support decides who can leave and who can shoot, and how much of the fleet's paper DPS lands; the wrong mix wastes pilots."
+      - text: "Check the doctrine as a whole: evaluate the mainline with conditions.command set to the link fit, projected set to N logi fits for the reps it will get and to the enemy pressure (neuts, webs), and compare scenarios with compare_fits variants."
+        why: "Mainline ships are built to be boosted and repaired; their solo numbers mislead."
+      - text: "Expect bubbles: you can't count on warping out, so the fleet must win or burn out of the bubble."
+        why: "Interdictors and HICs hold whole fleets on grid."
+        when: {space: nullsec}
+      - text: "Know the capital escalation the fleet can face (dreads, FAX, supers, titans): plan to kill them, survive them or leave first. Ask the user; it depends on the alliances nearby more than on the space."
+        why: "Capitals on grid decide subcap fights."
+      - text: "Size the hulls to the holes you will fight through; battleships and capitals need large holes and burn their mass."
+        why: "A fleet that can't jump the hole can't take the fight, and a collapsed hole strands it."
+        when: {space: wormhole}
+      - text: "Check every ship in the system's environment (conditions.environment: Wolf-Rayet, Pulsar, Magnetar, Black Hole, Cataclysmic Variable, Red Giant)."
+        why: "These effects swing resists, damage, cap and reps by tens of percent and can pick the doctrine."
+        when: {space: wormhole}
+      - text: "At this size there is little room for luxury: no backup links, the FC flies a fighting ship instead of a monitor, and mainline ships carry some utility (a point or a web)."
+        why: "Every pilot has to contribute to the fight."
+        when: {max_pilots: 60}
+      - text: "Expect alpha: buffer and resists must outlast the enemy's first volleys until logi lands reps."
+        why: "At this size called primaries die before reps arrive; sustained reps matter less."
+        when: {min_pilots: 100}
+      - text: "Expect bomb runs: keep support and logi off the main ball's warp-in and spread on landing; a mid-slot cap booster recovers from void bombs."
+        why: "Bombs kill clumped low-HP ships and void bombs empty the fleet's cap; bombers come for big fleets."
+        when: {min_pilots: 100}
+
+  fleet_mainline:
+    summary: "The fleet's DPS ship: shoots what the FC calls, holds the fleet's range, survives being primary until logi lands."
+    principles:
+      - text: "MWD sized to the hull: 500MN on battleships, 50MN on cruisers and battlecruisers, 5MN on frigates and destroyers."
+        why: "The FC repositions the fleet; an undersized MWD leaves the ship behind."
+      - text: "Weapons and ammo for the doctrine's range band, judged with fit_graph damage by distance, not paper DPS."
+        why: "Damage that doesn't reach the band doesn't count."
+      - text: "Fit for the fleet: buffer and resists over local repairers."
+        why: "Resists multiply every logi rep; local reps waste slots under remote reps."
+      - text: "Plug the weakest resist against the expected enemy damage (set damage_profile)."
+        why: "The enemy loads the damage type you are weakest to."
+      - text: "Cap booster when cap is short under neuts or void bombs (evaluate with the pressure the user expects, as conditions.projected neuts)."
+        why: "Fleets get neuted and void-bombed; charges keep guns, tank and MWD running."
+      - text: "Drones are utility unless the hull has drone damage bonuses (item_info traits): light drones against tackle, EWAR drones; don't count drone DPS at the band."
+        why: "Drones die or can't reach at fleet range, and anti-tackle saves ships; drone-bonused hulls are the exception, with drones as their main DPS."
+      - text: "Lows to tank (plates, resists, damage control). Mids: the MWD, then flex slots chosen for the expected opponent: cap booster, point or web, sensor booster, EWAR (jammers of the opponent's racial sensor type, tracking or guidance disruptors by the enemy's weapons)."
+        why: "Armor tanks in the lows, so the mids are free to answer the opponent."
+        when: {tank: armor}
+      - text: "Mids to tank (extenders, hardeners), MWD and cap booster. Lows: damage control, then damage and tracking modules; a Signal Amplifier only when the hull's lock range or targets fall short."
+        why: "Shield tanks in the mids, so the lows carry damage and application."
+        when: {tank: shield}
+      - text: "Pick the MWD variant for the doctrine and the opponent: variants trade speed, sig bloom (Quad LiF Restrained the smallest), activation cap (Cold-Gas Enduring the least) and the cap pool penalty (-15% to -25%). Compare them with compare_fits."
+        why: "A smaller cap pool regenerates less, so the variant changes cap stability as well as speed and signature."
+      - text: "Volley matters: EHP must outlast the enemy's first volleys."
+        why: "At this size primaries die in one or two volleys, before logi locks them."
+        when: {min_pilots: 100}
+      - text: "Carry a point where the fit and the fleet style allow."
+        why: "Without bubbles a pair of interdictors can't hold an enemy fleet; tackle has to come from many ships."
+        when: {space: lowsec}
+      - text: "Check the fit under the system's environment (conditions.environment)."
+        why: "Wormhole effects change resists, damage and cap by tens of percent."
+        when: {space: wormhole}
+
+  fleet_logistics:
+    summary: "Repairs the fleet: lands reps on the called primary faster than the enemy kills it."
+    principles:
+      - text: "Remote repairers for the doctrine's tank layer, and a resist tank of your own."
+        why: "Logi repairs one layer, and the enemy primaries logi first."
+      - text: "Rep range covers the fleet's spread at the band: check the repairers' optimal and falloff."
+        why: "A rep that can't reach the primary repairs nothing."
+      - text: "Mostly cap stable with reps running, on its own regen or the doctrine's cap chain; a cap booster is the emergency reserve against neuts, not the plan."
+        why: "Logi out of cap turns off the fleet's tank, and a booster's charges run out in a long fight."
+      - text: "Lock speed and targets: scan resolution and max targets decide how fast reps land on a new primary."
+        why: "A primary that dies before you lock it wasn't repaired."
+      - text: "Survive being primaried: buffer, resists, low sig and speed, with other logi repairing you."
+        why: "Losing logi collapses the fleet's tank."
+      - text: "Armor reps land at the end of the cycle: start repairing the primary before the damage lands."
+        why: "Late armor reps arrive after the volley that kills."
+        when: {tank: armor}
+      - text: "Shield reps land at the start of the cycle: they answer damage fast; keep cycling on the primary."
+        why: "Shield logi reacts to damage within one cycle."
+        when: {tank: shield}
+      - text: "Check reps under the system's environment: Cataclysmic Variable doubles remote reps (class 6), halves local reps and cap transfers, and slows cap recharge."
+        why: "It is the one wormhole effect that changes reps, and it changes a logi wing's cap plan."
+        when: {space: wormhole}
+
+  fleet_command:
+    summary: "Runs the command bursts that boost the whole fleet."
+    principles:
+      - text: "Bursts for the doctrine: armor or shield bursts for its layer, skirmish for speed and sig, information for lock range and scan resolution."
+        why: "Bursts multiply the whole fleet's stats; the wrong family boosts nothing the fleet uses."
+      - text: "Pick the hull from the game data: optimize_fit with allow.command, or list_ships(bonus=\"Command Burst strength\")."
+        why: "Burst strength varies by hull, module and mindlink; newer hulls may beat the ones you remember."
+      - text: "Fit every burst the doctrine needs on as few hulls as possible, before extra tank."
+        why: "A small fleet can't spare pilots for several boosters."
+        when: {max_pilots: 60}
+      - text: "Tank before extra bursts or utility: a dead booster drops every bonus at once."
+        why: "Boosters are primary targets, and a bigger fleet can spread its bursts over several hulls."
+        when: {min_pilots: 61}
+      - text: "Measure the boost on the mainline: evaluate it with conditions.command set to this fit."
+        why: "A booster's value is what it adds to the fleet, not its own stats."
+
+  fleet_support:
+    summary: "Tackle, webs, EWAR and anti-support: the ships that decide who can leave and who can shoot."
+    principles:
+      - text: "Tackle holds targets for the mainline: point and scram ranges must reach where the fleet fights."
+        why: "A target that warps off wastes the fleet's damage."
+      - text: "Spending more on longer-range webs, points and scrams (Faction or Deadspace) is often worth it; the search tools leave Deadspace out unless meta=[\"all\"]."
+        why: "Range decides whether tackle lands at all, and support is a small share of the fleet's cost."
+      - text: "Webs and target painters are damage application: a slower, bigger target takes more of the mainline's damage. Measure it with conditions.target set to the webbed or painted target's speed and signature; find bonused hulls with list_ships(bonus=\"Stasis Webifier\") or list_ships(bonus=\"Target Painter\")."
+        why: "They turn the fleet's paper DPS into applied DPS, and webs also stop kiting."
+      - text: "EWAR is chosen for the opponent: jammers of the enemy's racial sensor type, tracking or guidance disruptors by the enemy's weapons, damps against long lock ranges. Its value doesn't show in DPS or EHP: judge it by its effect on the target (fit_graph's ewar graph shows strength by distance)."
+        why: "Utility value is invisible to evaluate_fit's stats, and the wrong EWAR does nothing."
+      - text: "Anti-support: kill or chase off the enemy's tackle and EWAR with fast hulls and tracking weapons or light drones."
+        why: "Enemy tackle and EWAR hold and blind the fleet."
+      - text: "Support inside the enemy's range needs its own tank or speed."
+        why: "Low-HP support dies first."
+      - text: "Interdictors and HICs: bubbles hold the enemy fleet, and yours."
+        why: "In nullsec bubbles decide whether anyone can leave."
+        when: {space: nullsec}
+      - text: "No bubbles: tackle is points and scrams only, and holding a fleet takes many of them."
+        why: "Lowsec bans interdiction bubbles, so a pair of interdictors can't hold an enemy fleet."
+        when: {space: lowsec}

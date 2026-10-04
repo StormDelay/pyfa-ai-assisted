@@ -100,3 +100,30 @@ def test_search_input_errors(booted):
         server.optimize_fit("Rifter", "tank.ehp.total", constraints=[{"stat": "x"}])
     with pytest.raises(ToolError, match="no stored fit named 'Rifterr'"):
         server.marginal_swaps("Rifterr", "tank.ehp.total")
+
+
+def test_fitting_guide_tool_needs_no_boot(monkeypatch):
+    from mcp.server.mcpserver.exceptions import ToolError
+
+    def no_boot(*a, **k):
+        raise AssertionError("fitting_guide booted Pyfa")
+
+    monkeypatch.setattr(server, "_ensure_booted", no_boot)
+    assert "fleet_mainline" in server.fitting_guide()["roles"]
+    assert server.fitting_guide("fleet_mainline", tank="shield")["role"] == "fleet_mainline"
+    with pytest.raises(ToolError, match="unknown role"):
+        server.fitting_guide("fleet_dps")
+
+
+def test_instructions_point_at_the_guide_and_notes():
+    assert "fitting_guide" in server.INSTRUCTIONS
+    assert "starting point" in server.INSTRUCTIONS
+    assert "`notes`" in server.INSTRUCTIONS
+
+
+def test_fitting_guide_reads_the_servers_data_dir(tmp_path, monkeypatch):
+    (tmp_path / "fitting_guide.yaml").write_text(
+        "axes: {tank: {armor: a}, space: {nullsec: n}, pilots: p}\ngeneral: []\n"
+        "roles: {fleet_mine: {summary: mine, principles: []}}\n", encoding="utf-8")
+    monkeypatch.setattr(server, "_data_dir", tmp_path)
+    assert set(server.fitting_guide()["roles"]) == {"fleet_mine"}
