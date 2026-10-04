@@ -127,3 +127,7 @@ def test_fitting_guide_reads_the_servers_data_dir(tmp_path, monkeypatch):
         "roles: {fleet_mine: {summary: mine, principles: []}}\n", encoding="utf-8")
     monkeypatch.setattr(server, "_data_dir", tmp_path)
     assert set(server.fitting_guide()["roles"]) == {"fleet_mine"}
+
+
+def test_instructions_say_compatibility_comes_from_the_tools():
+    assert "item_info charges" in server.INSTRUCTIONS

@@ -268,12 +268,15 @@ def item_info(name: str) -> dict:
         close = suggest(name)
         raise CatalogError(f"unknown item '{name}'"
                            + (f" (did you mean: {', '.join(close)}?)" if close else ""))
-    return {
+    info = {
         **{k: v for k, v in _row(item).items()
            if k not in ("cpu", "powergrid") and not (k == "slot" and v is None)},
         "traits": _plain(item.traits.display) if item.traits is not None else "",
         "attributes": {attr_name: attr.value for attr_name, attr in item.attributes.items()},
     }
+    if any(a.startswith("chargeGroup") for a in item.attributes):
+        info["charges"] = [c.name for c in valid_charges(item)]
+    return info
 
 
 _NEW_CATEGORIES = ("Ship", "Module", "Implant", "Charge", "Drone", "Fighter", "Subsystem")

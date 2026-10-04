@@ -112,3 +112,9 @@ def test_whats_new_rejects_bad_arguments(booted):
         catalog.whats_new("Spaceship")
     with pytest.raises(catalog.CatalogError, match="limit"):
         catalog.whats_new(limit=0)
+
+
+def test_item_info_lists_the_charges_a_module_takes(booted):
+    assert "Scorch M" in catalog.item_info("Imperial Navy Heavy Pulse Laser")["charges"]
+    assert "Scorch M" not in catalog.item_info("Heavy Pulse Laser I")["charges"]
+    assert "charges" not in catalog.item_info("Zealot")

@@ -68,7 +68,9 @@ pyfa-mcp computes EVE Online fits with Pyfa's own engine.
   not be the best and offer to search longer.
 - The game data may be newer than your training. Find ships and items
   with the tools (list_ships can_fit/bonus, find_modifiers, whats_new),
-  never from memory.
+  never from memory. The same goes for what fits with what: which charges
+  a module takes is in item_info charges, and evaluate_fit's validity says
+  whether a fit works.
 - Walk conditions_format()["beyond_the_fit"] (pod, drugs, links, phenomena,
   projected, environment, heat, mode) and tell the user which of those you
   assumed, set, or left out.
@@ -152,7 +154,8 @@ def list_ships(group: str | None = None, race: str | None = None,
 @app.tool()
 @_tool
 def item_info(name: str) -> dict:
-    """All attributes and the trait/bonus text of one item (ship, module, charge...)."""
+    """All attributes and the trait/bonus text of one item (ship, module, charge...),
+    and for a module that takes charges, every charge it accepts (`charges`)."""
     return catalog.item_info(name)
 
 
