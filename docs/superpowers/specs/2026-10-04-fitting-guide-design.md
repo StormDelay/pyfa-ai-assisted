@@ -23,7 +23,7 @@ causes:
 - **Warning signs pass unnoticed.** The output showed 207 m/s with the MWD on,
   but nothing drew attention to it.
 
-Success: tests T1–T8 (below) pass, and a rerun of the fleet Rokh prompt makes
+Success: tests T1–T7 (below) pass, and a rerun of the fleet Rokh prompt makes
 the agent call `fitting_guide` first and act on the notes.
 
 ## Decisions taken in brainstorming
@@ -37,10 +37,16 @@ the agent call `fitting_guide` first and act on the notes.
   (armor, shield), space (nullsec, lowsec, wormhole) and scale (about 50, 100
   or 250 pilots). Principles carry a `when` tag over these three axes. There
   are no per-combination entries.
-- **Role-free notes are mechanical and quiet.** Only two checks survived
+- **Role-free notes are mechanical and quiet.** Only one check survived
   review:
   - **Propmod efficiency** stays.
-  - **Uniform-damage hole** stays.
+  - **Uniform-damage hole** was dropped after measuring it. Armor and hull
+    EHP dilute a shield hole: a Rokh with 2 Multispectrum hardeners (shield
+    EM 66%) has worst-type EHP at 0.85 of uniform, and an open 30% EM is
+    0.75. Judged on the main layer alone, it fires on nearly every shield
+    fit, even one with EM plugged (0.71). Whether a hole matters depends on
+    the enemy's damage. That is `damage_profile`, which the guide and the
+    instructions push instead.
   - **Hull-size lint by name** was dropped. Modules have no size attribute,
     and names mislead: a Large Shield Extender is a cruiser module.
   - **Mixed tank detection** was dropped as too fragile; the EHP split per
@@ -71,9 +77,10 @@ fitting_guide(role: str | None = None, tank: str | None = None,
   - `principles`: `[{text, why}]`. These are the role's untagged principles
     plus the tagged ones whose `when` matches the given axes.
   - `general`: the general principles;
-  - `suggested`: `{conditions, constraints}` to pass to `evaluate_fit`,
+  - `suggested`: `{conditions, constraints, why}` to pass to `evaluate_fit`,
     `compare_fits` and `optimize_fit`. Either can be absent.
-  - `unset`: one entry per axis not given, with the text that axis's values
+  - `unset`: one entry per axis that is not given and that some of the
+    role's principles are tagged with, holding the text that axis's values
     would add, e.g. `{"space": "wormhole: mass limits, environment effects;
     lowsec: capital drops, gate guns"}`. Absent when every axis is set.
 - **Bad input:** an unknown role, axis value or a non-positive `pilots`
@@ -174,17 +181,7 @@ deliberate fit may ignore them. `compare_fits` rows carry `notes` as they carry
     thrust for this hull's mass; a larger propmod gives more".
   - **Oversized is quiet.** An oversized propmod (100MN AB on a cruiser)
     beats its rating and never fires.
-- **Uniform-damage hole.**
-  - **When it applies:** only when the damage profile is the default
-    uniform.
-  - **Formula:** for each damage type, compute the EHP against that type
-    alone: Σ over layers of `hp / (1 − resist)`, from the existing `tank`
-    numbers.
-  - **When it fires:** when the worst type's EHP < `HOLE_RATIO` (0.75) × the
-    uniform EHP, e.g. "uniform damage hides a hole: EHP vs pure EM is 61k
-    (uniform 84k); set damage_profile for the expected enemy".
-
-Both thresholds are module constants, the calibration knobs.
+`PROPMOD_RATIO` is a module constant, the calibration knob.
 
 ### 4. `INSTRUCTIONS`
 
@@ -215,10 +212,7 @@ Both thresholds are module constants, the calibration knobs.
   - every `suggested.constraints` passes `search._constraints`.
 - **T6** A Rokh with a 50MN MWD gets the propmod note. The same Rokh with a
   500MN MWD, and a cruiser with a 100MN AB, do not.
-- **T7** A fit with an open resist hole under uniform damage gets the hole note.
-  The same fit with a `damage_profile` set does not, and a fit with balanced
-  resists does not.
-- **T8** `compare_fits` rows carry `notes`; `test_server` sees the
+- **T7** `compare_fits` rows carry `notes`; `test_server` sees the
   `fitting_guide` tool and the new instructions text.
 
 ## Out of scope
