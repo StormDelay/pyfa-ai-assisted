@@ -42,8 +42,9 @@ pyfa-mcp computes EVE Online fits with Pyfa's own engine.
 - Every result has `applied` (what the numbers assume) and `warnings`.
   Tell the user about warnings, and mention the assumptions that matter.
   evaluate_fit and compare_fits also give `notes`: likely fitting mistakes
-  (e.g. a propmod too small for the hull). Fix them, or tell the user why
-  the fit deliberately keeps one.
+  (e.g. a propmod too small for the hull, a burst the hull doesn't bonus).
+  Fix them, or tell the user why the fit deliberately keeps one.
+  evaluate_fit's `hull_bonuses` lists what the hull is built for: fit to it.
 - Use compare_fits to evaluate many candidate fits in one call.
 - Call status() if numbers look wrong; relay any warning it reports.
 - export_to_pyfa writes into the user's own Pyfa. Call it only when the
@@ -173,8 +174,9 @@ def evaluate_fit(fit: str, conditions: dict | None = None) -> dict:
     """Full stats of one fit (EFT text or stored fit name/id) under conditions:
     validity (cpu/pg/calibration/slots/hardpoints), tank (hp, ehp, resists,
     repair), offense (dps/volley), capacitor, navigation, targeting, drones,
-    plus `applied`, `warnings` and `notes` (likely fitting mistakes). Modules
-    that do not fit are left out and listed as validity problems.
+    plus `applied`, `warnings`, `notes` (likely fitting mistakes) and
+    `hull_bonuses` (the hull's trait lines: fit to them). Modules that do not
+    fit are left out and listed as validity problems.
     To check whether a fit can be improved, use marginal_swaps."""
     return evaluate.evaluate(fit, conditions)
 

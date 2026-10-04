@@ -39,8 +39,7 @@ def compute() -> dict:
     for case, spec in cases.items():
         fit = (REF / f"{spec.get('fit', case)}.eft").read_text()
         result = evaluate.evaluate(fit, _resolve(spec.get("conditions")))
-        flat = stats.flatten({k: v for k, v in result.items()
-                              if k not in ("fit", "ship", "applied", "warnings")})
+        flat = stats.flatten({k: v for k, v in result.items() if k not in evaluate.META_KEYS})
         out[case] = {k: flat[k] for k in KEYS}
     return out
 

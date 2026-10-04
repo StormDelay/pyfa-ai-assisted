@@ -3,7 +3,10 @@ from __future__ import annotations
 
 import json
 
-from pyfa_mcp import conditions, drift, eft, eosboot, notes, stats, store
+from pyfa_mcp import catalog, conditions, drift, eft, eosboot, notes, stats, store
+
+# Keys of an evaluate result that are not stats.
+META_KEYS = ("fit", "ship", "applied", "warnings", "notes", "hull_bonuses")
 
 
 class Scratch:
@@ -47,9 +50,10 @@ def _evaluate_parsed(ref: str, cond) -> dict:
         name, ship = fit.name, fit.ship.item.name
         effect_warnings = drift.effect_warnings(fit)
         fit_notes = notes.for_fit(fit)
+        bonuses = catalog.hull_bonuses(fit.ship.item)
     return {"fit": name, "ship": ship, "applied": applied,
             "warnings": warnings_for(result) + effect_warnings + store.pyfa_warnings(ref),
-            "notes": fit_notes, **result}
+            "notes": fit_notes, "hull_bonuses": bonuses, **result}
 
 
 def evaluate(ref: str, raw_conditions: dict | None) -> dict:
@@ -87,8 +91,7 @@ def compare(refs: list[str], raw_conditions: dict | None,
                              "error": f"{type(exc).__name__}: {exc}"})
                 continue
             applied = applied or result["applied"]
-            flat = stats.flatten({k: v for k, v in result.items()
-                                  if k not in ("fit", "ship", "applied", "warnings", "notes")})
+            flat = stats.flatten({k: v for k, v in result.items() if k not in META_KEYS})
             unknown = [k for k in keys if k not in flat]
             if unknown:
                 raise ValueError(f"unknown stat '{unknown[0]}'; stat keys look like "

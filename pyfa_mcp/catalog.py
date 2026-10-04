@@ -191,6 +191,12 @@ def _bonus_lines(ship, words: list[str]) -> list[dict]:
     return out
 
 
+def hull_bonuses(ship) -> list[str]:
+    """Every trait line of a ship item, per-level ones marked."""
+    return [b["line"] + (" (per skill level)" if b["per"] == "level" else "")
+            for b in _bonus_lines(ship, [])]
+
+
 def list_ships(group: str | None = None, race: str | None = None,
                can_fit: str | None = None, bonus: str | None = None) -> list[dict]:
     ships = _ship_items()

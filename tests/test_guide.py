@@ -89,7 +89,7 @@ def test_t5_suggested_conditions_and_constraints_are_usable(booted, zealot_eft, 
     from pyfa_mcp import conditions, evaluate, search, stats
     data = yaml.safe_load(guide.GUIDE.read_text(encoding="utf-8"))
     keys = set(stats.flatten({k: v for k, v in evaluate.evaluate(zealot_eft, None).items()
-                              if k not in ("fit", "ship", "applied", "warnings", "notes")}))
+                              if k not in evaluate.META_KEYS}))
     for name, role in data["roles"].items():
         suggested = role.get("suggested", {})
         if "conditions" in suggested:

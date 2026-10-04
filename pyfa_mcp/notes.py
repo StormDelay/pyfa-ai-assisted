@@ -3,6 +3,11 @@ Advisory: a deliberate fit may ignore them (evaluate's `warnings` are for
 validity and effects Pyfa can't compute)."""
 from __future__ import annotations
 
+import re
+
+# "3% bonus to Armored Command and Information Command burst strength and duration"
+_BURST_FAMILIES = re.compile(r"bonus to (.+?) burst strength", re.IGNORECASE)
+
 # Calibration knob: flag a propmod giving under this share of its rated speed
 # gain. Right-sized propmods give 0.8-1.0; a 50MN MWD on a battleship ~0.14.
 PROPMOD_RATIO = 0.5
@@ -37,4 +42,28 @@ def for_fit(fit) -> list[str]:
         note = propmod_note(mod.item.name, rated, thrust, mass)
         if note:
             out.append(note)
-    return list(dict.fromkeys(out))
+    return list(dict.fromkeys(out + _burst_notes(fit)))
+
+
+def _burst_notes(fit) -> list[str]:
+    """Bursts without a command mindlink, and bursts of a family the hull
+    doesn't bonus (the family is the burst's skill, as named in the traits)."""
+    from pyfa_mcp import catalog
+
+    bursts = [m for m in fit.modules if not m.isEmpty and m.item.group.name == "Command Burst"]
+    if not bursts:
+        return []
+    out = []
+    if not any("mindlinkBonus" in i.item.attributes for i in fit.implants):
+        out.append("command bursts fitted but no command mindlink in the pod: a mindlink "
+                   "matching the bursts raises their strength and duration")
+    families = set()
+    for line in catalog.hull_bonuses(fit.ship.item):
+        found = _BURST_FAMILIES.search(line)
+        if found:
+            families |= {f.strip() for f in re.split(r",|\band\b", found.group(1)) if f.strip()}
+    for mod in bursts:
+        if families and not {s.name for s in mod.item.requiredSkills} & families:
+            out.append(f"{mod.item.name} is not a burst family this hull bonuses "
+                       f"({', '.join(sorted(families))}): it runs at base strength")
+    return out
