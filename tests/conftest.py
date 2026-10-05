@@ -95,3 +95,41 @@ def _offline(monkeypatch):
         raise OSError("no network in tests")
 
     monkeypatch.setattr(drift, "_fetch_tag", no_network)
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _prices_offline():
+    """No test downloads prices. Session-wide and never undone: a background
+    download thread may outlive the test that started it."""
+    from pyfa_mcp import prices
+
+    def no_download(timeout):
+        raise OSError("no network in tests")
+
+    prices._download = no_download
+    yield
+    prices.configure(None)
+
+
+@pytest.fixture
+def seed_prices(booted):
+    """seed({"Heat Sink II": 1e6, ...}, age_days=0): write the server's prices.json
+    by item name; removed again after the test."""
+    import json
+    import time
+
+    import eos.db
+    from pyfa_mcp import prices
+
+    path = booted / prices.FILE
+
+    def seed(by_name: dict, age_days: float = 0.0) -> None:
+        by_id = {str(eos.db.getItem(name).ID): value for name, value in by_name.items()}
+        path.write_text(json.dumps({"source": "fuzzwork",
+                                    "fetched_at": time.time() - age_days * 86400,
+                                    "prices": by_id}), encoding="utf-8")
+        prices.configure(booted)
+
+    yield seed
+    path.unlink(missing_ok=True)
+    prices.configure(None)
