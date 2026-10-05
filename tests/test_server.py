@@ -45,6 +45,9 @@ def test_smoke_over_stdio(booted, tmp_path):
     fresh = {"tag": None, "checked": time.time()}  # status() then never asks GitHub
     (data / "release-check.json").write_text(
         json.dumps({drift.PYFA_REPO: fresh, drift.OWN_REPO: fresh}), encoding="utf-8")
+    (data / "prices.json").write_text(  # fresh: the server never downloads prices
+        json.dumps({"source": "fuzzwork", "fetched_at": time.time(), "prices": {}}),
+        encoding="utf-8")
     proc = subprocess.run(
         [sys.executable, str(ROOT / "packaging" / "mcp_smoke.py"),
          sys.executable, "-m", "pyfa_mcp", "--data-dir", str(data),
@@ -131,3 +134,20 @@ def test_fitting_guide_reads_the_servers_data_dir(tmp_path, monkeypatch):
 
 def test_instructions_say_compatibility_comes_from_the_tools():
     assert "item_info charges" in server.INSTRUCTIONS
+
+
+def test_status_and_refresh_prices(booted, seed_prices):
+    seed_prices({"Zealot": 1e8})
+    assert server.status()["prices"]["state"] == "ok"
+    out = server.refresh_prices()
+    assert out["refreshed"] is False and "minutes old" in out["reason"]
+
+
+def test_instructions_explain_prices():
+    text = server.INSTRUCTIONS
+    assert "refresh_prices" in text and "partial" in text and "null" in text
+
+
+def test_guide_no_longer_says_the_tools_cant_see_price():
+    from pyfa_mcp import guide
+    assert "can't see price" not in guide.GUIDE.read_text(encoding="utf-8")

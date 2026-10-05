@@ -14,8 +14,8 @@ import time
 from collections import Counter, OrderedDict
 from typing import NamedTuple
 
-from pyfa_mcp import (bench, candidates, conditions, drift, eft, evaluate, pool, pyfadata,
-                      stats, store)
+from pyfa_mcp import (bench, candidates, conditions, drift, eft, evaluate, pool, prices,
+                      pyfadata, stats, store)
 from pyfa_mcp.bench import Edit
 
 # Candidate pools and find_modifiers/marginal_swaps trial results; optimize_fit's
@@ -187,6 +187,14 @@ def _charge_name(type_id: int) -> str:
     return eos.db.getItem(type_id).name
 
 
+def _candidate_price(c) -> float | None:
+    """What fitting the candidate costs: a set is all its pieces."""
+    if len(c.edits) > 1:
+        each = [prices.cost(e.item_id) for e in c.edits]
+        return None if None in each else sum(each)
+    return prices.cost(c.type_id, c.charge_id)
+
+
 def _row(c, delta, heat, baseline, replaced, problems, signs) -> dict:
     notes = []
     if c.active:
@@ -202,7 +210,7 @@ def _row(c, delta, heat, baseline, replaced, problems, signs) -> dict:
     return {"name": c.name, "type_id": c.type_id, "source": c.source, "slot": c.slot,
             "charge": None if c.charge_id is None else _charge_name(c.charge_id),
             "group": c.group, "meta": c.meta, "cpu": c.cpu, "pg": c.pg,
-            "calibration": c.calibration, "delta": delta,
+            "calibration": c.calibration, "price": _candidate_price(c), "delta": delta,
             "delta_overheated": None if heat is None else
             {k: heat.values[k] - baseline[k] for k in delta},
             "exclusive_group": c.exclusive_group, "modifies": list(c.modifies),
@@ -227,11 +235,13 @@ def _groups(rows: list[dict], first: str, sign: int) -> list[dict]:
         top, ref = members[0], _reference(members)
         out.append({
             "group": group, "source": source, "slot": top["slot"], "variants": len(members),
-            "best": {**{k: top[k] for k in ("name", "meta", "cpu", "pg", "calibration")},
+            "best": {**{k: top[k] for k in ("name", "meta", "cpu", "pg", "calibration",
+                                            "price")},
                      "delta": top["delta"], **({"limits": top["limits"]} if "limits" in top
                                               else {})},
             "reference": None if ref is None or ref is top else
-            {"name": ref["name"], "meta": ref["meta"], "delta": ref["delta"]},
+            {"name": ref["name"], "meta": ref["meta"], "price": ref["price"],
+             "delta": ref["delta"]},
             "delta_range": [members[-1]["delta"][first], top["delta"][first]],
             "notes": sorted({n for r in members for n in r["notes"]
                              if not n.startswith("on this fit")})[:5]})
@@ -329,6 +339,7 @@ def find_modifiers(fit: str, stat_keys: list[str], sources: list[str] | None = N
         "candidates": _expand(rows, groups, expand),
         "excluded": (_excluded_rows if verbose else _excluded_counts)(found.excluded + failed),
         "pinned": pinned,
+        "price_source": prices.price_source(),
         "coverage": {"items_scanned": found.scanned, "measured": len(trials),
                      "effects_unresolved": drift.unhandled_for(
                          [c.type_id for c in found.candidates])},
@@ -415,6 +426,13 @@ def _swap_places(b, include_empty: bool, options) -> list[tuple]:
     return out
 
 
+def _isk_delta(occ, option) -> float | None:
+    """What a swap costs: the new item (and its charge load) minus the old one."""
+    old = 0.0 if occ is None else prices.cost(occ[0], occ[1])
+    new = 0.0 if option is None else prices.cost(option.type_id, option.charge_id)
+    return None if old is None or new is None else new - old
+
+
 def marginal_swaps(fit: str, objective: str, raw_conditions: dict | None = None,
                    meta: list[str] | None = None, include_empty_slots: bool = True,
                    top_n: int = 10, availability: str | None = None,
@@ -436,18 +454,19 @@ def marginal_swaps(fit: str, objective: str, raw_conditions: dict | None = None,
             removed = None if occ is None else b.name_of(occ[0])
             if occ is not None:
                 trials.append(([Edit(where, None)], None))
-                labels.append((place, removed, None, ()))
+                labels.append((place, removed, None, (), _isk_delta(occ, None)))
             for option in options.get(place, []):
                 if occ is not None and (option.type_id, option.charge_id) == occ[:2]:
                     continue
                 trials.append(([option.edit(where)], None))
-                labels.append((place, removed, option.name, option.limits))
+                labels.append((place, removed, option.name, option.limits,
+                               _isk_delta(occ, option)))
         applied = {**b.applied, "meta": found.meta_note,
                    "availability": found.availability_note}
     results = _run(ref, raw, [key], trials)
 
     rows, invalid, failed = [], 0, []
-    for (place, removed, added, lim), (edits, _), trial in zip(labels, trials, results):
+    for (place, removed, added, lim, isk), (edits, _), trial in zip(labels, trials, results):
         if trial.values is None:
             failed.append({"remove": removed, "add": added, "error": trial.error})
             continue
@@ -456,7 +475,7 @@ def marginal_swaps(fit: str, objective: str, raw_conditions: dict | None = None,
             continue
         delta = trial.values[key] - base
         rows.append({"slot": place, "remove": removed, "add": added, "delta": delta,
-                     "new_value": trial.values[key], "valid": True, "_edits": edits,
+                     "isk_delta": isk, "new_value": trial.values[key], "valid": True, "_edits": edits,
                      **({"limits": list(lim)} if lim else {})})
     rows.sort(key=lambda r: (-sign * r["delta"], r["add"] or "", r["remove"] or ""))
     improving = bool(rows) and sign * rows[0]["delta"] > 0 and not _zero(rows[0]["delta"], base)
@@ -480,6 +499,7 @@ def marginal_swaps(fit: str, objective: str, raw_conditions: dict | None = None,
                 "or let optimize_fit rebuild it")
     return {"applied": applied, "objective": objective, "baseline": base, "swaps": top,
             "no_improvement_found": not improving, **invalid_base, "warnings": warnings,
+            "price_source": prices.price_source(),
             "coverage": {"swaps_tried": len(trials), "invalid_dropped": invalid,
                          "failed": failed, "excluded": (_excluded_rows if verbose else _excluded_counts)(
                              found.excluded)}}
@@ -937,6 +957,7 @@ def _diff(first: dict, other: dict) -> dict:
     if states != first.get("conditions", {}).get("module_states", []):
         diff["module_states"] = states  # EFT has no heat: states tell such fits apart
     return {"objective_value": other["objective_value"], "valid": other["valid"],
+            **{k: other[k] for k in ("price_total", "price_partial") if k in other},
             "diff": diff}
 
 
@@ -1087,6 +1108,10 @@ def optimize_fit(fit: str, objective: str, raw_conditions: dict | None = None,
         shown = list(dict.fromkeys([key, *(s for s, _, _ in cons), *stats.DEFAULT_COMPARE]))
         holds = all(_holds(flat[s], op, x) for s, op, x in cons)
         entry = {"eft": confirmed["eft"], "objective_value": flat[key]}
+        price = confirmed["result"]["price"]
+        entry["price_total"] = price["total"]
+        if price.get("partial"):
+            entry.update(price_partial=True, unpriced=price["unpriced"])
         if "overheated" in allow["module_states"]:
             entry["objective_cold"] = _value(confirmed["eft"], final, key)
         entry.update(stats={k: flat[k] for k in shown if k in flat},
@@ -1111,6 +1136,7 @@ def optimize_fit(fit: str, objective: str, raw_conditions: dict | None = None,
     info = {o.name: o for opts in options.values() for o in opts}
     return {
         **out,
+        "price_source": prices.price_source(),
         "considered": {pk: (sorted if verbose else len)({o.name for o in opts})
                        for pk, opts in considered.items()},
         "pruned": ([{"name": n, "reason": r} for n, r in sorted(pruned.items())] if verbose

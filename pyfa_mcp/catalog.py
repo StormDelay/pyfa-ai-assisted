@@ -6,6 +6,7 @@ import difflib
 import functools
 import re
 
+from pyfa_mcp import prices
 from pyfa_mcp.eft import suggest
 
 _SLOT_EFFECTS = {"hiPower": "high", "medPower": "mid", "loPower": "low",
@@ -103,6 +104,7 @@ def _row(item) -> dict:
         "name": item.name, "type_id": item.ID, "group": item.group.name,
         "category": item.category.name, "meta": _meta(item), "slot": _slot(item),
         "cpu": item.getAttribute("cpu"), "powergrid": item.getAttribute("power"),
+        "price": prices.price(item.ID),
     }
     found = limits(item)
     if found:
@@ -276,6 +278,7 @@ def item_info(name: str) -> dict:
     }
     if any(a.startswith("chargeGroup") for a in item.attributes):
         info["charges"] = [c.name for c in valid_charges(item)]
+    info["price_source"] = prices.price_source()
     return info
 
 
