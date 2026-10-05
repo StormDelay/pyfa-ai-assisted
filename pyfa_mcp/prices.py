@@ -208,3 +208,54 @@ def refresh(timeout: float = 30) -> dict:
         return {"refreshed": True, **price_info()}
     return {"refreshed": False, **price_info(),
             "error": error or "the download is still running; prices update when it ends"}
+
+
+def load(module_item, charge_item) -> int:
+    """Charges that fill the module: Pyfa's Module.getNumCharges."""
+    capacity = module_item.getAttribute("capacity") or 0
+    volume = charge_item.getAttribute("volume") or 0
+    return int(capacity / volume + 1e-9) if volume else 0
+
+
+def cost(type_id: int, charge_id: int | None = None) -> float | None:
+    """An item, plus a full load of its charge; None when either price is unknown."""
+    base = price(type_id)
+    if charge_id is None or base is None:
+        return base
+    unit = price(charge_id)
+    if unit is None:
+        return None
+    import eos.db
+
+    module, charge = eos.db.getItem(type_id), eos.db.getItem(charge_id)
+    if module is None or charge is None:
+        return None
+    return base + unit * load(module, charge)
+
+
+def fit_price(fit) -> dict:
+    """A calculated eos fit's price by bucket. Unknown items count nothing and are
+    named in `unpriced`, with `partial: True`."""
+    used = [m for m in fit.modules if not m.isEmpty]
+    lines = {
+        "hull": [(fit.ship.item, 1)],
+        "modules": [(m.item, 1) for m in used],
+        "charges": [(m.charge, m.numCharges) for m in used if m.charge is not None],
+        "drones": [(d.item, d.amount) for d in fit.drones]
+                  + [(f.item, f.amount) for f in fit.fighters],
+        "implants": [(i.item, 1) for i in fit.implants] + [(b.item, 1) for b in fit.boosters],
+        "cargo": [(c.item, c.amount) for c in fit.cargo],
+    }
+    buckets, unpriced = {}, []
+    for bucket, items in lines.items():
+        buckets[bucket] = 0.0
+        for item, count in items:
+            each = price(item.ID)
+            if each is None:
+                unpriced.append(item.name)
+            else:
+                buckets[bucket] += each * count
+    out = {"total": sum(buckets.values()), **buckets}
+    if unpriced:
+        out.update(partial=True, unpriced=list(dict.fromkeys(unpriced)))
+    return out

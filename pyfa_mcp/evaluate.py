@@ -3,10 +3,10 @@ from __future__ import annotations
 
 import json
 
-from pyfa_mcp import catalog, conditions, drift, eft, eosboot, notes, stats, store
+from pyfa_mcp import catalog, conditions, drift, eft, eosboot, notes, prices, stats, store
 
 # Keys of an evaluate result that are not stats.
-META_KEYS = ("fit", "ship", "applied", "warnings", "notes", "hull_bonuses")
+META_KEYS = ("fit", "ship", "applied", "warnings", "notes", "hull_bonuses", "price_source")
 
 
 class Scratch:
@@ -51,9 +51,14 @@ def _evaluate_parsed(ref: str, cond) -> dict:
         effect_warnings = drift.effect_warnings(fit)
         fit_notes = notes.for_fit(fit)
         bonuses = catalog.hull_bonuses(fit.ship.item)
+        try:
+            price = prices.fit_price(fit)
+        except Exception as exc:  # a price problem never fails an evaluation
+            price = {"total": None, "error": f"{type(exc).__name__}: {exc}"}
     return {"fit": name, "ship": ship, "applied": applied,
             "warnings": warnings_for(result) + effect_warnings + store.pyfa_warnings(ref),
-            "notes": fit_notes, "hull_bonuses": bonuses, **result}
+            "notes": fit_notes, "hull_bonuses": bonuses, **result,
+            "price": price, "price_source": prices.price_source()}
 
 
 def evaluate(ref: str, raw_conditions: dict | None) -> dict:
@@ -73,7 +78,7 @@ def compare(refs: list[str], raw_conditions: dict | None,
                                  or not all(isinstance(v, dict) for v in variants)):
         raise ValueError("variants: a non-empty list of partial conditions objects, each "
                          "merged over conditions")
-    keys = list(keys) if keys else list(stats.DEFAULT_COMPARE)
+    keys = list(keys) if keys else [*stats.DEFAULT_COMPARE, "price.total"]
     applied, rows = None, []
     for index, variant in enumerate(variants or [None]):
         # bad conditions fail the whole call
@@ -96,8 +101,11 @@ def compare(refs: list[str], raw_conditions: dict | None,
             if unknown:
                 raise ValueError(f"unknown stat '{unknown[0]}'; stat keys look like "
                                  f"{', '.join(stats.DEFAULT_COMPARE[:3])}")
+            partial = ({"price_partial": True, "unpriced": result["price"]["unpriced"]}
+                       if result["price"].get("partial") else {})
             rows.append({"fit": result["fit"], "ship": result["ship"], **label,
-                         **{k: flat[k] for k in keys}, "warnings": result["warnings"],
-                         "notes": result["notes"]})
+                         **{k: flat[k] for k in keys}, **partial,
+                         "warnings": result["warnings"], "notes": result["notes"]})
     columns = ["fit", *(["variant"] if variants else []), *keys]
-    return {"applied": applied, "columns": columns, "rows": rows}
+    return {"applied": applied, "columns": columns, "rows": rows,
+            "price_source": prices.price_source()}

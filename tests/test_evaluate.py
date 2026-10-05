@@ -107,3 +107,55 @@ def test_variants_must_be_a_list_of_objects(booted):
     for wrong in ([], ["uniform"]):
         with pytest.raises(ValueError, match="variants"):
             evaluate.compare([wyvern.BRIEF], None, None, wrong)
+
+
+ZEALOT_ITEMS = ["Zealot", "Heat Sink II", "Damage Control II",
+                "Multispectrum Energized Membrane II", "Medium Armor Repairer II",
+                "50MN Microwarpdrive II", "Warp Disruptor II", "Stasis Webifier II",
+                "Heavy Pulse Laser II", "Medium Energy Locus Coordinator II",
+                "Medium Energy Metastasis Adjuster II"]
+
+
+def test_p6_fit_price_buckets(booted, zealot_eft, seed_prices, no_fits_left):
+    seed_prices({**{n: 1e6 for n in ZEALOT_ITEMS}, "Scorch M": 100.0})
+    result = evaluate.evaluate(zealot_eft, None)
+    price = result["price"]
+    # 5 low + 3 mid + 5 high + 2 rigs; one Scorch M per laser
+    assert price == {"total": 16e6 + 500.0, "hull": 1e6, "modules": 15e6, "charges": 500.0,
+                     "drones": 0.0, "implants": 0.0, "cargo": 0.0}
+    assert result["price_source"] == "fuzzwork Forge sell, 0.0 days old"
+
+
+def test_p6_partial_fit_price(booted, zealot_eft, seed_prices, no_fits_left):
+    seed_prices({**{n: 1e6 for n in ZEALOT_ITEMS if n != "Stasis Webifier II"},
+                 "Scorch M": 100.0})
+    price = evaluate.evaluate(zealot_eft, None)["price"]
+    assert price["total"] == 15e6 + 500.0 and price["modules"] == 14e6
+    assert price["partial"] is True and price["unpriced"] == ["Stasis Webifier II"]
+
+
+def test_fit_price_counts_drones_and_cargo(booted, seed_prices, no_fits_left):
+    seed_prices({"Vexor": 1e7, "Hobgoblin II": 1e5, "Nanite Repair Paste": 1e4})
+    # drones and cargo in separate sections, or the importer puts both in cargo
+    fit = "[Vexor, d]\n\nHobgoblin II x5\n\nNanite Repair Paste x10\n"
+    price = evaluate.evaluate(fit, None)["price"]
+    assert price["drones"] == 5e5 and price["cargo"] == 1e5
+    assert price["total"] == 1e7 + 5e5 + 1e5 and "partial" not in price
+
+
+def test_p8_compare_has_a_price_column(booted, zealot_eft, seed_prices, no_fits_left):
+    seed_prices({"Zealot": 1e6})
+    out = evaluate.compare([zealot_eft], None, None)
+    assert "price.total" in out["columns"]
+    row = out["rows"][0]
+    assert row["price.total"] == 1e6
+    assert row["price_partial"] is True and "Heat Sink II" in row["unpriced"]
+    assert out["price_source"].startswith("fuzzwork Forge sell")
+
+
+def test_unseeded_prices_are_null_not_zero(booted, zealot_eft, no_fits_left):
+    from pyfa_mcp import prices
+    prices.configure(None)
+    price = evaluate.evaluate(zealot_eft, None)["price"]
+    assert price["total"] == 0.0 and price["partial"] is True
+    assert "Zealot" in price["unpriced"]
