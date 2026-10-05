@@ -17,7 +17,7 @@ import sys
 TOOLS = {"search_items", "list_ships", "item_info", "whats_new", "evaluate_fit", "compare_fits",
          "fit_graph", "graph_options", "conditions_format", "status", "save_fit",
          "list_fits", "get_fit", "delete_fit", "export_to_pyfa", "find_modifiers",
-         "marginal_swaps", "optimize_fit", "fitting_guide"}
+         "marginal_swaps", "optimize_fit", "fitting_guide", "refresh_prices"}
 FIT = "[Rifter, smoke]\n200mm AutoCannon II, EMP S\n"
 # One call per subsystem a frozen build could miss an import for: eos (evaluate),
 # drift (status), graphs, conditions.

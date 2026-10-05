@@ -18,7 +18,7 @@ from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 
 from pyfa_mcp import (catalog, conditions, drift, eft, eosboot, evaluate, graphs, guide, pool,
-                      pyfadata, register, search, store)
+                      prices, pyfadata, register, search, store)
 
 INSTRUCTIONS = """\
 pyfa-mcp computes EVE Online fits with Pyfa's own engine.
@@ -66,6 +66,13 @@ pyfa-mcp computes EVE Online fits with Pyfa's own engine.
   smaller budget such as {"seconds": 30}: the result is then the best found
   so far. Whenever search.converged is false, tell the user the answer may
   not be the best and offer to search longer.
+- Item and fit prices (`price`, `price.total`, marginal_swaps `isk_delta`,
+  optimize_fit `price_total`) are estimates: fuzzwork's The Forge sell
+  price, roughly Jita sell, as old as `price_source` says. Weigh cost when
+  you recommend Faction, Deadspace or Officer items over Tech II, and say
+  what the upgrade costs. null means unknown, not free; a `partial` total
+  leaves out its `unpriced` items: quote it as "at least X, without ...".
+  Call refresh_prices only when the user asks for fresh prices.
 - The game data may be newer than your training. Find ships and items
   with the tools (list_ships can_fit/bonus, find_modifiers, whats_new),
   never from memory. The same goes for what fits with what: which charges
@@ -99,6 +106,7 @@ def _ensure_booted() -> None:
         _boot_error = f"pyfa-mcp could not start Pyfa: {exc}"
         raise ToolError(_boot_error) from exc
     _booted = True
+    prices.ensure_fresh()  # background download if prices.json is missing or stale
 
 
 def _tool(fn):
@@ -348,7 +356,17 @@ def status() -> dict:
             "game_client_build": catalog.client_build(),
             "data_dir": str(eosboot.boot(_data_dir)),
             "search_workers": pool.describe(),
+            "prices": prices.price_info(),
             **drift.report()}
+
+
+@app.tool()
+@_tool
+def refresh_prices() -> dict:
+    """Download fresh market prices now (fuzzwork, The Forge sell). Call it only
+    when the user asks for fresh prices: they otherwise refresh in the
+    background every 3 days. Waits up to about 30 seconds."""
+    return prices.refresh()
 
 
 # --- storage -----------------------------------------------------------------
