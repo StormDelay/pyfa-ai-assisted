@@ -196,3 +196,21 @@ def test_review_refresh_waits_for_a_running_download(data_dir, downloads):
     threading.Timer(0.2, gate.set).start()
     out = prices.refresh(timeout=5)
     assert out["refreshed"] is True and fake.calls == 1
+
+
+@pytest.mark.parametrize("fetched_at", ["1e20", "NaN", "Infinity", str(time.time() + 30 * 86400)])
+def test_review_impossible_fetched_at_is_no_data(data_dir, fetched_at):
+    (data_dir / prices.FILE).write_text(
+        '{"source": "fuzzwork", "fetched_at": ' + fetched_at + ', "prices": {"2048": 5.0}}',
+        encoding="utf-8")
+    assert prices.price(2048) is None
+    join()
+    assert prices.price_source().startswith("prices unavailable:")
+
+
+def test_review_non_finite_prices_are_dropped(data_dir):
+    (data_dir / prices.FILE).write_text(
+        '{"source": "fuzzwork", "fetched_at": ' + str(time.time())
+        + ', "prices": {"2048": NaN, "2049": -1, "2050": 5.0}}', encoding="utf-8")
+    assert prices.price(2048) is None and prices.price(2049) is None
+    assert prices.price(2050) == 5.0

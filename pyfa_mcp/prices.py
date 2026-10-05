@@ -9,6 +9,7 @@ import csv
 import gzip
 import io
 import json
+import math
 import os
 import sys
 import threading
@@ -77,9 +78,14 @@ def _loaded() -> dict | None:
     if mtime != _mtime:
         try:
             raw = json.loads(_path().read_text(encoding="utf-8"))
-            _data = {"fetched_at": float(raw["fetched_at"]),
-                     "prices": {int(k): float(v) for k, v in raw["prices"].items()}}
-        except (OSError, ValueError, KeyError, TypeError, AttributeError):
+            fetched_at = float(raw["fetched_at"])
+            # hand-edited or clock-skewed: NaN, 1e20 or a future date never goes stale
+            if not math.isfinite(fetched_at) or fetched_at > time.time() + 86400:
+                raise ValueError(f"impossible fetched_at {fetched_at}")
+            _data = {"fetched_at": fetched_at,
+                     "prices": {int(k): float(v) for k, v in raw["prices"].items()
+                                if math.isfinite(float(v)) and float(v) > 0}}
+        except (OSError, ValueError, KeyError, TypeError, AttributeError, OverflowError):
             _data = None
         _mtime = mtime
     return _data
