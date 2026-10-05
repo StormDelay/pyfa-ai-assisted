@@ -480,7 +480,8 @@ def test_t4_compact_output_fits_a_context(booted, no_fits_left):
     assert set(compact["pruned"]) == {"counts", "near_winners"}
     assert len(compact["pruned"]["near_winners"]) <= 20
     assert all(isinstance(n, int) for n in compact["excluded"].values())
-    assert all(set(b) == {"objective_value", "valid", "diff"} for b in compact["best"][1:])
+    assert all(set(b) - {"price_total", "price_partial"} == {"objective_value", "valid", "diff"}
+               for b in compact["best"][1:])  # unpriced names stay on best[0]
 
 
 def test_verbose_brings_back_every_name(booted, zealot_eft, no_fits_left):
@@ -644,3 +645,73 @@ def test_fleet_says_whether_the_fit_was_searched_under_it(booted, zealot_eft, no
     short = search.optimize_fit(zealot_eft, "tank.ehp.total", allow={"command": True},
                                 top_k=1, budget={"evaluations": 50})
     assert short["fleet"]["searched_under"] is False
+
+
+@pytest.fixture
+def price_is_type_id(monkeypatch):
+    """Every item costs its type ID in ISK: prices become checkable by arithmetic."""
+    from pyfa_mcp import prices
+    monkeypatch.setattr(prices, "price", lambda type_id: float(type_id))
+
+
+def _id(name):
+    import eos.db
+    return eos.db.getItem(name).ID
+
+
+def test_p9_find_modifiers_rows_carry_prices(booted, no_fits_left, price_is_type_id):
+    result = search.find_modifiers("Wyvern", ["tank.ehp.total"], sources=["module"],
+                                   expand=["*"])
+    rows = result["candidates"]
+    assert rows and all(r["price"] == r["type_id"] for r in rows if r["charge"] is None)
+    by_name = {r["name"]: r["price"] for r in rows}
+    for g in result["groups"]:
+        assert g["best"]["price"] == by_name[g["best"]["name"]]
+        if g["reference"] is not None:
+            assert g["reference"]["price"] == by_name[g["reference"]["name"]]
+    assert "price_source" in result
+
+
+def test_review_an_implant_set_costs_all_its_pieces(booted, price_is_type_id):
+    from pyfa_mcp.bench import Edit
+    from pyfa_mcp.candidates import Candidate
+    a, b = _id("High-grade Crystal Alpha"), _id("High-grade Crystal Beta")
+    the_set = Candidate(name="High-grade Crystal set", source="implant", slot="implant 1",
+                        group="Implant sets", meta="Faction", type_id=a,
+                        edits=(Edit(("implant", 1), a), Edit(("implant", 2), b)))
+    assert search._candidate_price(the_set) == a + b
+
+
+def test_p7_marginal_swaps_isk_delta(booted, no_fits_left, price_is_type_id):
+    result = search.marginal_swaps(LOOSE, "tank.ehp.total", include_empty_slots=False,
+                                   top_n=50)
+    swaps = result["swaps"]
+    assert swaps
+    for s in swaps:
+        new = 0.0 if s["add"] is None else _id(s["add"])
+        old = 0.0 if s["remove"] is None else _id(s["remove"])
+        assert s["isk_delta"] == new - old, s
+    assert "price_source" in result
+
+
+def test_p7_unpriced_side_gives_null(booted, no_fits_left, monkeypatch):
+    from pyfa_mcp import prices
+    extender = _id("Small Core Defense Field Extender I")
+    monkeypatch.setattr(prices, "price",
+                        lambda type_id: None if type_id == extender else float(type_id))
+    swaps = search.marginal_swaps(LOOSE, "tank.ehp.total", include_empty_slots=False,
+                                  top_n=50)["swaps"]
+    assert swaps and all(s["isk_delta"] is None for s in swaps)  # every swap replaces it
+
+
+def test_p9_optimize_fit_best_carries_its_price(booted, zealot_eft, no_fits_left,
+                                                price_is_type_id):
+    out = search.optimize_fit(zealot_eft, "tank.ehp.total", budget={"evaluations": 50},
+                              top_k=2)
+    best = out["best"][0]
+    assert best["price_total"] == evaluate.evaluate(best["eft"], best["conditions"])[
+        "price"]["total"]
+    assert "price_partial" not in best
+    for diff in out["best"][1:]:
+        assert "price_total" in diff
+    assert "price_source" in out
