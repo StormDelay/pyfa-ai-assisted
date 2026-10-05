@@ -120,20 +120,23 @@ main process on the rows being returned; search workers never see them.
 - **`evaluate_fit`:** a `price` block:
 
   ```json
-  {"total": 412000000.0, "hull": ..., "modules": ..., "charges": ...,
-   "drones": ..., "implants": ..., "cargo": ..., "unpriced": ["..."]}
+  {"total": 412000000.0, "partial": true, "hull": ..., "modules": ...,
+   "charges": ..., "drones": ..., "implants": ..., "cargo": ...,
+   "unpriced": ["..."]}
   ```
 
   `modules` covers high/mid/low slots, rigs and subsystems; `charges` is one
   full load per module that holds one (the module's charge count × the charge
   price); `drones` covers drones and fighters, times their count; `implants`
-  covers implants and boosters; `cargo` is cargo times count. A bucket is the
-  sum of its priced items; an empty bucket is 0; a bucket whose items are all
-  unpriced is `null`. `total` is the sum of every priced item (`null` if
-  nothing is priced); `unpriced` names every item without a price
-  (deduplicated), so a partial sum is never mistaken for the full cost. Modules that do not fit and are
+  covers implants and boosters; `cargo` is cargo times count. Every bucket
+  and `total` is a number: the sum of the items it could price (0 if none).
+  `partial` is `true` when any item is unpriced, and `unpriced` names them
+  (deduplicated); both are left out when everything is priced. The agent
+  quotes a partial total as "at least X, without <unpriced>". Modules that do not fit and are
   left out of the fit are not priced.
-- **`compare_fits`:** `price.total` joins `stats.DEFAULT_COMPARE`, and any
+- **`compare_fits`:** `price.total` joins `stats.DEFAULT_COMPARE`; a row
+  whose total is partial gets `price_partial: true` and its `unpriced`
+  list. Any
   `price.*` key can be picked in `stats`. `price` is not a stat: it is not an
   objective or constraint for the search tools.
 - **`marginal_swaps`:** each row gets `isk_delta` = price(add) −
@@ -142,8 +145,9 @@ main process on the rows being returned; search workers never see them.
 - **`find_modifiers`:** each row's `best` and `reference` get `price`; with
   `expand`/`verbose`, every listed variant gets `price`.
 - **`optimize_fit`:** each fit in `best` gets `price_total` (the
-  `evaluate_fit` `price.total` of that fit); in compact mode `best[1:]`'s diff
-  includes it.
+  `evaluate_fit` `price.total` of that fit), plus `price_partial: true` and
+  `unpriced` when it is partial; in compact mode `best[1:]`'s diff includes
+  them.
 - **`item_info`, `search_items`:** `price` per item.
 - **`status`:** a `prices` field with `price_info()`.
 - **New tool `refresh_prices()`:** docstring: "Download fresh market prices
@@ -156,7 +160,7 @@ main process on the rows being returned; search workers never see them.
   sell, i.e. roughly Jita sell); weigh cost when recommending faction,
   deadspace or officer items over Tech II and say what the upgrade costs;
   quote prices with their age from `price_source`; `null` means unknown, not
-  free; call `refresh_prices` only when the user asks.
+  free; a `partial` total is quoted as "at least X, without <unpriced>"; call `refresh_prices` only when the user asks.
 - `fitting_guide.yaml`, the `fleet_command` mindlink principle: its `why`
   drops "the tools can't see price"; the text says the faction mindlink's cost
   shows in `price`.
@@ -193,8 +197,10 @@ return a gzip CSV built in the test.
   it downloads and returns `refreshed: true`; a failing download returns
   `refreshed: false` with `error` and does not raise.
 - **P6** `evaluate_fit.price`: on a known fit with a seeded `prices.json`,
-  bucket totals and `total` match the hand sum; an item missing from the
-  file is in `unpriced` and makes nothing 0; `price_source` is present once.
+  bucket totals and `total` match the hand sum and `partial` is absent;
+  with one module missing from the file, `total` is the sum of the rest,
+  `partial` is `true` and `unpriced` names it; `price_source` is present
+  once.
 - **P7** `marginal_swaps`: a known row's `isk_delta` equals price(add) −
   price(remove); an unpriced side gives `null`.
 - **P8** `item_info` and `search_items` carry `price`; `compare_fits` has a
