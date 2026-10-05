@@ -118,3 +118,13 @@ def test_item_info_lists_the_charges_a_module_takes(booted):
     assert "Scorch M" in catalog.item_info("Imperial Navy Heavy Pulse Laser")["charges"]
     assert "Scorch M" not in catalog.item_info("Heavy Pulse Laser I")["charges"]
     assert "charges" not in catalog.item_info("Zealot")
+
+
+def test_p8_item_rows_carry_a_price(booted, seed_prices):
+    seed_prices({"Zealot": 2e8})
+    info = catalog.item_info("Zealot")
+    assert info["price"] == 2e8
+    assert info["price_source"].startswith("fuzzwork Forge sell")
+    rows = catalog.search_items("Heat Sink II")
+    assert rows and all("price" in r for r in rows)
+    assert all(r["price"] is None for r in rows)  # unseeded: unknown, not 0
