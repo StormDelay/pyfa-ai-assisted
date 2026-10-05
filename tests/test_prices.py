@@ -79,3 +79,120 @@ def test_review_picks_up_a_file_another_server_wrote(data_dir):
     assert prices.price(2048) == 5.0  # not re-checked within the hour
     prices._checked_at = 0.0
     assert prices.price(2048) == 7.0
+
+
+class Downloads:
+    """A stand-in for prices._download: counts calls, returns `body` or raises it,
+    optionally waits on `gate` first."""
+
+    def __init__(self, body, gate=None):
+        self.body, self.gate, self.calls = body, gate, 0
+
+    def __call__(self, timeout):
+        self.calls += 1
+        if self.gate is not None:
+            self.gate.wait(5)
+        if isinstance(self.body, Exception):
+            raise self.body
+        return self.body
+
+
+@pytest.fixture
+def downloads(monkeypatch):
+    def install(body, gate=None):
+        fake = Downloads(body, gate)
+        monkeypatch.setattr(prices, "_download", fake)
+        return fake
+    return install
+
+
+def test_p2_fresh_until_three_days(data_dir, downloads):
+    fake = downloads(gz([("10000002|2048|false", 9.0)]))
+    write(data_dir, {2048: 5.0}, age_days=2.9)
+    assert prices.price_info()["state"] == "ok"
+    join()
+    assert fake.calls == 0
+
+    prices.configure(data_dir)
+    write(data_dir, {2048: 5.0}, age_days=3.1)
+    assert prices.price_info()["state"] in ("stale", "ok")
+    join()
+    assert fake.calls == 1
+    assert prices.price(2048) == 9.0 and prices.price_info()["state"] == "ok"
+
+
+def test_p3_failure_keeps_the_old_file_and_backs_off(data_dir, downloads):
+    fake = downloads(OSError("boom"))
+    path = write(data_dir, {2048: 5.0}, age_days=4)
+    before = path.read_bytes()
+    prices.price(2048)
+    join()
+    assert path.read_bytes() == before
+    info = prices.price_info()
+    assert info["state"] == "stale" and "boom" in info["error"]
+    assert "last refresh failed" in prices.price_source()
+    prices.ensure_fresh()  # within RETRY_AFTER: no new attempt
+    join()
+    assert fake.calls == 1
+
+
+def test_p3_no_file_and_failure_is_unavailable(data_dir, downloads):
+    downloads(OSError("boom"))
+    assert prices.price(2048) is None
+    join()
+    assert prices.price_info()["state"] == "unavailable"
+
+
+def test_p4_loading_while_the_first_download_runs(data_dir, downloads):
+    gate = threading.Event()
+    downloads(gz([("10000002|2048|false", 9.0)]), gate)
+    assert prices.price(2048) is None
+    assert prices.price_info()["state"] == "loading"
+    assert prices.price_source().startswith("prices loading")
+    gate.set()
+    join()
+    assert prices.price(2048) == 9.0
+
+
+def test_p5_refresh_cooldown_success_and_failure(data_dir, downloads):
+    fake = downloads(gz([("10000002|2048|false", 9.0)]))
+    write(data_dir, {2048: 5.0}, age_days=0.001)  # ~1.4 minutes
+    out = prices.refresh()
+    assert out["refreshed"] is False and "minutes old" in out["reason"]
+    assert fake.calls == 0
+
+    prices.configure(data_dir)
+    write(data_dir, {2048: 5.0}, age_days=1)
+    out = prices.refresh()
+    assert out["refreshed"] is True and out["state"] == "ok"
+    assert prices.price(2048) == 9.0
+
+    downloads(OSError("boom"))
+    prices.configure(data_dir)
+    write(data_dir, {2048: 5.0}, age_days=1)
+    out = prices.refresh()
+    assert out["refreshed"] is False and "boom" in out["error"]
+    assert prices.price(2048) == 5.0
+
+
+def test_review_a_failed_write_keeps_the_old_file(data_dir, downloads, monkeypatch):
+    downloads(gz([("10000002|2048|false", 9.0)]))
+    path = write(data_dir, {2048: 5.0}, age_days=1)
+    before = path.read_bytes()
+
+    def locked(src, dst):
+        raise PermissionError("file is locked")
+
+    monkeypatch.setattr(prices.os, "replace", locked)
+    out = prices.refresh()
+    assert out["refreshed"] is False and "PermissionError" in out["error"]
+    assert path.read_bytes() == before and prices.price(2048) == 5.0
+
+
+def test_review_refresh_waits_for_a_running_download(data_dir, downloads):
+    gate = threading.Event()
+    fake = downloads(gz([("10000002|2048|false", 9.0)]), gate)
+    prices.price(2048)  # starts the background download, which waits on the gate
+    threading.Timer(0.2, gate.set).start()
+    out = prices.refresh(timeout=5)
+    assert out["refreshed"] is True and fake.calls == 1

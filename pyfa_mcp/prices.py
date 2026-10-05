@@ -186,3 +186,25 @@ def price_source() -> str:
         text += (" (stale; last refresh failed: " + info["error"] + ")"
                  if "error" in info else " (stale; refreshing)")
     return text
+
+
+def refresh(timeout: float = 30) -> dict:
+    """Download now (the user asked). Waits on a running background download
+    instead of starting a second one. Never raises."""
+    before = _current()
+    if before is not None and time.time() - before["fetched_at"] < REFRESH_COOLDOWN:
+        minutes = int((time.time() - before["fetched_at"]) / 60)
+        return {"refreshed": False, "reason": f"prices are {minutes} minutes old",
+                **price_info()}
+    with _lock:
+        running = _worker if _busy() else None
+    if running is not None:
+        running.join(timeout)
+    else:
+        _fetch(timeout)
+    with _lock:
+        after, error = _data, _error
+    if after is not None and after is not before:
+        return {"refreshed": True, **price_info()}
+    return {"refreshed": False, **price_info(),
+            "error": error or "the download is still running; prices update when it ends"}
