@@ -1,6 +1,6 @@
 [project]
 name = "pyfa-mcp"
-version = "0.5.0"
+version = "0.5.1"
 description = "MCP server exposing Pyfa's EVE Online fitting engine to LLM clients"
 requires-python = ">=3.14,<3.15"
 license = "GPL-3.0-or-later"
