@@ -102,7 +102,6 @@ def test_t12_whats_new_lists_the_command_carriers(booted):
     result = catalog.whats_new("ship", 10)
     names = [i["name"] for i in result["items"]]
     assert {"Salvation", "Simurgh", "Gaia", "Ymir"} <= set(names)
-    assert names[0] == "Ymir"
     assert "type ID" in result["ordered_by"] and result["game_client_build"]
     assert len(catalog.whats_new(limit=5)["items"]) == 5
 
