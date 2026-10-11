@@ -165,3 +165,30 @@ def test_damaged_skill_table_is_learned_again(booted, zealot_eft, empty_table, n
     with bench.Bench(zealot_eft) as b:
         b.measure(KEYS)
     assert str(_id("Zealot")) in json.loads(empty_table.read_text())
+
+
+def test_trials_in_a_row_measure_as_from_the_fit_as_opened(booted, zealot_eft, no_fits_left):
+    """A trial leaves its edits on and the next changes only what differs; each must
+    still measure what a fresh bench measures, and the fit comes back as opened."""
+    with bench.Bench(zealot_eft) as b:
+        low = [w for w in b.module_places() if b.rack(w) == "low"]
+        mid = [w for w in b.module_places() if b.rack(w) == "mid"]
+        dc, web = _id("Damage Control II"), _id("Stasis Webifier II")
+        snake = _id("High-grade Snake Alpha")
+        steps = [[bench.Edit(low[0], dc)],
+                 [bench.Edit(low[0], dc), bench.Edit(mid[0], web)],
+                 [bench.Edit(mid[0], web)],
+                 [bench.Edit(low[0], None), bench.Edit(mid[0], web)],
+                 [bench.Edit(mid[0], web), bench.Edit(("implant", 1), snake)],
+                 [bench.Edit(low[1], _id("Capital Armor Plates"))],  # refused
+                 [bench.Edit(mid[0], web), bench.Edit(low[2], dc)],
+                 []]
+        got = [b.trial(edits, KEYS) for edits in steps]
+        text = b.eft()
+    for edits, trial in zip(steps, got):
+        with bench.Bench(zealot_eft) as fresh:
+            want = fresh.trial(edits, KEYS)
+        assert (trial.values, trial.problems, trial.error) == \
+            (want.values, want.problems, want.error), edits
+    with bench.Bench(zealot_eft) as fresh:
+        assert text == fresh.eft()

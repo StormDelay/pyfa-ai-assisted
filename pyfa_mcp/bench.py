@@ -126,9 +126,11 @@ class Bench:
             self._stack.close()
             raise
         self.spool = conditions.spool_of(self._cond)
+        self._pending: list = []  # (edit, undo) the last trial left on the fit
         return self
 
     def __exit__(self, *exc):
+        self._settle()
         return self._stack.__exit__(*exc)
 
     # --- places ------------------------------------------------------------
@@ -143,6 +145,7 @@ class Bench:
         return self.fit.implants if kind == "implant" else self.fit.boosters
 
     def occupant(self, where: tuple) -> tuple | None:
+        self._settle()
         kind, at = where
         if kind == "module":
             mod = self.fit.modules[at]
@@ -158,6 +161,10 @@ class Bench:
     # --- edits -------------------------------------------------------------
 
     def apply(self, edits) -> list:
+        self._settle()
+        return self._apply(edits)
+
+    def _apply(self, edits) -> list:
         undo: list = []
         try:
             for edit in edits:
@@ -338,11 +345,16 @@ class Bench:
     # --- measuring ---------------------------------------------------------
 
     def measure(self, keys) -> dict:
+        self._settle()
         self._recalc()
         return stats.read(self.fit, list(keys), self.spool)
 
     def problems(self) -> list[str]:
         """Validity problems of the fit as last measured, plus activation limits."""
+        self._settle()
+        return self._problems()
+
+    def _problems(self) -> list[str]:
         from eos.const import FittingModuleState
 
         found = list(stats._validity(self.fit)["problems"])
@@ -354,26 +366,56 @@ class Bench:
         return found
 
     def trial(self, edits, keys) -> Trial:
+        """The fit with `edits` measured. The edits stay on the fit: the next trial
+        changes only the places it wants otherwise (a search moves one or two at a
+        time, of ~15), and every other method puts the fit back first."""
         try:
-            undo = self.apply(edits)
+            self._move_to(list(edits))
         except ValueError as exc:  # BenchError, or eos refusing an unsuitable item
             return Trial(None, [str(exc)], str(exc))
         try:
-            return Trial(self.measure(keys), self.problems())
+            self._recalc()
+            return Trial(stats.read(self.fit, list(keys), self.spool), self._problems())
         except Exception as exc:  # one candidate Pyfa chokes on must not sink a search
+            self._settle()
             return Trial(None, [], f"{type(exc).__name__}: {exc}")
-        finally:
-            self.revert(undo)
+
+    def _settle(self) -> None:
+        """Back to the fit as opened."""
+        pending, self._pending = self._pending, []
+        self.revert([undo for _, undo in pending])
+
+    def _move_to(self, edits: list) -> None:
+        # Module places undo independently; implants and boosters undo by list
+        # position and projected modules by command, so those start from the fit as opened.
+        places = {e.where for e in edits}
+        if (len(places) < len(edits)
+                or any(e.where[0] != "module" for e in [*edits, *(e for e, _ in self._pending)])):
+            self._settle()
+        wanted = {e.where: e for e in edits}
+        keep = [(e, u) for e, u in self._pending if wanted.get(e.where) == e]
+        self.revert([u for e, u in self._pending if wanted.get(e.where) != e])
+        self._pending = keep
+        kept = {e.where for e, _ in keep}
+        todo = [e for e in edits if e.where not in kept]
+        try:
+            undo = self._apply(todo)
+        except BaseException:
+            self._settle()
+            raise
+        self._pending += list(zip(todo, undo))
 
     # --- export ------------------------------------------------------------
 
     def eft(self) -> str:
+        self._settle()
         return eft.export_fit(self.fit)
 
     def module_states(self) -> list[dict]:
         """module_states conditions that give this bench's states to its EFT."""
         from eos.const import FittingModuleState
 
+        self._settle()
         counts: dict[tuple, int] = {}
         for mod in self.fit.modules:
             if mod.isEmpty or mod.state == FittingModuleState.OFFLINE:
