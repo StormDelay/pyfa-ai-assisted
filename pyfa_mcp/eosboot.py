@@ -117,17 +117,18 @@ def _purge_temp_fits() -> None:
 
 
 def purge_temp_profiles() -> None:
-    """Delete custom damage/target profiles made for an evaluation.
+    """Delete custom damage/target profiles and characters made for an evaluation.
 
-    A fit refers to a custom profile through a relationship, so Pyfa saves
-    the profile along with the (temporary) fit; they carry TEMP_NOTE as name.
+    A fit refers to them through relationships, so Pyfa saves them along with
+    the (temporary) fit; they carry TEMP_NOTE as name.
     """
     import eos.db
+    from eos.saveddata.character import Character
     from eos.saveddata.damagePattern import DamagePattern
     from eos.saveddata.targetProfile import TargetProfile
 
     session = eos.db.saveddata_session
-    for cls in (DamagePattern, TargetProfile):
-        for profile in session.query(cls).filter(cls.rawName == TEMP_NOTE).all():
-            session.delete(profile)
+    for column in (DamagePattern.rawName, TargetProfile.rawName, Character.savedName):
+        for row in session.query(column.class_).filter(column == TEMP_NOTE).all():
+            session.delete(row)
     eos.db.commit()

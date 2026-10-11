@@ -150,6 +150,12 @@ def target_profiles() -> dict[str, dict]:
             for p in _session().query(TargetProfile).all() if p.rawName}
 
 
+def characters() -> list:
+    """The user's own Pyfa characters, built-ins included, from the snapshot."""
+    from eos.saveddata.character import Character
+    return _session().query(Character).all()
+
+
 def _pyfa_running() -> bool:
     # ponytail: sees the packaged pyfa.exe only, not Pyfa run from source
     # (python pyfa.py); add a cmdline scan if someone runs it that way.
