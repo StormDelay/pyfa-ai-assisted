@@ -86,10 +86,20 @@ def test_trial_reports_an_invalid_change(booted, no_fits_left):
         assert b.problems() == []  # reverted
 
 
-def test_run_trials_groups_extra_conditions(booted, no_fits_left):
-    trials = [([], None), ([], {"command": [{"fit": wyvern.PHENOMENA}]})]
-    plain, boosted = bench.run_trials("[Wyvern, x]\n", None, ["tank.hp.shield"], trials)
-    assert boosted.values["tank.hp.shield"] > plain.values["tank.hp.shield"]
+def test_extra_command_fits_measure_as_their_merged_conditions(booted, no_fits_left):
+    """Extra command fits join the open bench for their trials, then leave it."""
+    edits = [bench.Edit(("module", 0), _id(wyvern.PDS))]
+    phenomena = {"command": [{"fit": wyvern.PHENOMENA}]}
+    base = {"command": [{"fit": wyvern.BOOST}]}
+    trials = [(edits, None), (edits, phenomena), ([], phenomena), (edits, None),
+              ([], {"command": [{"fit": "[Nonexistent Hull, x]"}]})]
+    got = bench.run_trials(wyvern.BRIEF, base, KEYS, trials)
+    for (e, extra), trial in zip(trials[:4], got):
+        with bench.Bench(wyvern.BRIEF, bench.merge_conditions(base, extra)) as fresh:
+            want = fresh.trial(e, KEYS)
+        assert (trial.values, trial.problems) == (want.values, want.problems)
+    assert got[1].values != got[0].values and got[3] == got[0]
+    assert got[4].values is None and got[4].error
 
 
 def test_trial_turns_an_unfittable_item_into_an_error(booted, no_fits_left):

@@ -83,16 +83,13 @@ def _work(ref: str, raw_conditions: dict | None, keys: list[str], trials: list) 
 def _measure(ref: str, raw_conditions: dict | None, keys: list[str], trials: list) -> list:
     global _kept
     key = json.dumps([ref, raw_conditions], sort_keys=True)
-    extra = any(e is not None for _, e in trials)
-    if _kept is not None and (_kept[0] != key or extra):
+    if _kept is not None and _kept[0] != key:
         _drop_kept()
-    if extra:
-        return bench.run_trials(ref, raw_conditions, keys, trials)
     if _kept is None:
         opened = bench.Bench(ref, raw_conditions)
         _kept = (key, opened.__enter__())
     try:
-        return [_kept[1].trial(edits, keys) for edits, _ in trials]
+        return _kept[1].run(trials, keys)
     except BaseException:  # the fit may be left half edited: never measure on it again
         _drop_kept()
         raise

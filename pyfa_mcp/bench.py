@@ -111,7 +111,7 @@ class Bench:
         from eos.const import ImplantLocation
         self._stack = contextlib.ExitStack()
         try:
-            scratch = self._stack.enter_context(evaluate.Scratch())
+            scratch = self._scratch = self._stack.enter_context(evaluate.Scratch())
             self.fit = scratch.add_fit(self._ref)
             # An EFT without implant lines leaves them on the character, where
             # edits to fit.implants would not count; the EFT is the whole truth.
@@ -380,6 +380,64 @@ class Bench:
             self._settle()
             return Trial(None, [], f"{type(exc).__name__}: {exc}")
 
+    def run(self, trials: list, keys) -> list:
+        """Measure each (edits, extra conditions) trial. An extra is {"command": [...]}
+        (bursts, phenomena, a fleet): those fits boost this one for its trials."""
+        results: list = [None] * len(trials)
+        groups: dict[str, list[int]] = {}
+        for index, (_, extra) in enumerate(trials):
+            groups.setdefault(json.dumps(extra, sort_keys=True), []).append(index)
+        for key, indexes in groups.items():
+            extra = json.loads(key)
+            if extra is not None and set(extra) != {"command"}:
+                raise ValueError(f"extra conditions can only add command fits, not {sorted(extra)}")
+            try:
+                added = self._command([c["fit"] for c in (extra or {}).get("command", [])])
+            except Exception as exc:  # a command fit Pyfa will not take
+                for index in indexes:
+                    results[index] = Trial(None, [], f"{type(exc).__name__}: {exc}")
+                continue
+            try:
+                for index in indexes:
+                    results[index] = self.trial(trials[index][0], keys)
+            finally:
+                self._uncommand(added)
+        return results
+
+    def _command(self, fits: list[str]) -> list:
+        """Boost the fit by these command fits too; the commands, to undo."""
+        from eos.const import FittingModuleState
+        from gui.fitCommands.calc.commandFit.add import CalcAddCommandCommand
+
+        added: list = []
+        if not fits:
+            return added
+        self._settle()  # importing a fit commits: swapped-out modules must be back first
+        try:
+            for text in fits:
+                other = self._scratch.add_fit(text)
+                command = CalcAddCommandCommand(self.fit.ID, other.ID, FittingModuleState.ACTIVE)
+                if not command.Do():
+                    raise BenchError(f"Pyfa refused the command fit '{other.name}'")
+                added.append(command)
+        except BaseException:
+            self._uncommand(added)
+            raise
+        return added
+
+    def _uncommand(self, added: list) -> None:
+        if not added:
+            return
+        import eos.db
+        self._settle()
+        for command in reversed(added):
+            command.Undo()
+        eos.db.commit()
+        # The command fits still list the link just removed: reload them, so the
+        # scratch does not delete it a second time with them.
+        for command in added:
+            eos.db.saveddata_session.expire(eos.db.getFit(command.commandFitID))
+
     def _settle(self) -> None:
         """Back to the fit as opened."""
         pending, self._pending = self._pending, []
@@ -434,21 +492,6 @@ def merge_conditions(raw: dict | None, extra: dict | None) -> dict:
 
 
 def run_trials(ref: str, raw_conditions: dict | None, keys: list[str], trials: list) -> list:
-    """Measure each (edits, extra conditions) trial; one bench per distinct extra."""
-    results: list = [None] * len(trials)
-    groups: dict[str, list[int]] = {}
-    for index, (_, extra) in enumerate(trials):
-        groups.setdefault(json.dumps(extra, sort_keys=True), []).append(index)
-    for key, indexes in groups.items():
-        extra = json.loads(key)
-        try:
-            with Bench(ref, merge_conditions(raw_conditions, extra)) as b:
-                for index in indexes:
-                    results[index] = b.trial(trials[index][0], keys)
-        except Exception as exc:
-            if extra is None:
-                raise  # the fit itself is wrong: the caller's error
-            for index in indexes:
-                if results[index] is None:
-                    results[index] = Trial(None, [], f"{type(exc).__name__}: {exc}")
-    return results
+    """Measure each (edits, extra conditions) trial on one bench."""
+    with Bench(ref, raw_conditions) as b:
+        return b.run(trials, keys)
