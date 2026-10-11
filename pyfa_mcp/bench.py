@@ -2,14 +2,18 @@
 
 A Bench imports a fit once (conditions applied) into a temporary fit, then
 edits that live eos fit in place: replace a module, swap an implant,
-project a module. A measurement is one recalc, ~10 ms on a linked capital
-against ~75 ms for an import/evaluate/delete round trip. Callers re-run
+project a module. A measurement is one recalc, ~2-3 ms on a linked capital
+once the skill table knows its items, against ~75 ms for an import/evaluate/delete
+round trip. Callers re-run
 every fit they return through evaluate.evaluate; bench numbers only rank.
 """
 from __future__ import annotations
 
 import contextlib
+import functools
 import json
+import os
+from pathlib import Path
 from typing import NamedTuple
 
 from pyfa_mcp import conditions, eft, evaluate, stats
@@ -41,6 +45,62 @@ def _item(type_id: int):
     return eos.db.getItem(type_id)
 
 
+# --- the skill table ---------------------------------------------------------
+# Item key ("<type id>", "<type id>/<charge id>", "p..." when projected) -> type IDs
+# of the skills whose effects touch it. A recalc with every skill fills it in from
+# what eos records as each attribute's modifiers; skills bonus by group as well as
+# by required skill, so only a recalc can say. No skill effect checks its own level
+# and eos records a modifier that changes nothing, so an entry holds for every
+# character. The table is kept in the server's data dir, per Pyfa version and client build.
+
+_SCHEMA = 1
+table_dir: Path | None = None  # pool workers: the server's data dir
+_touches: dict | None = None
+_new: dict = {}  # learned since the last save
+
+
+@functools.cache
+def _table_path() -> Path:
+    from pyfa_mcp import catalog, eosboot
+    base = table_dir or eosboot.booted_dir()
+    return base / (f"skill_touches-v{_SCHEMA}-{eosboot.pyfa_version()}-"
+                   f"{catalog.client_build()}.json")
+
+
+def _read_table() -> dict:
+    try:
+        data = json.loads(_table_path().read_text(encoding="utf-8"))
+        return {k: frozenset(v) for k, v in data.items()} if isinstance(data, dict) else {}
+    except (OSError, ValueError, TypeError):
+        return {}  # missing or damaged: learned again
+
+
+def _table() -> dict:
+    global _touches
+    if _touches is None:
+        _touches = _read_table()
+    return _touches
+
+
+def save_table() -> None:
+    """Merge what this process learned into the file. Processes racing may drop
+    each other's entries; those are only learned again."""
+    if not _new:
+        return
+    merged = {**_read_table(), **_new}
+    path = _table_path()
+    tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+    try:
+        tmp.write_text(json.dumps({k: sorted(v) for k, v in merged.items()}), encoding="utf-8")
+        os.replace(tmp, path)
+    except OSError:
+        with contextlib.suppress(OSError):
+            tmp.unlink(missing_ok=True)
+        return  # kept for this process only, tried again at the next save
+    _new.clear()
+    _table().update(merged)
+
+
 class Bench:
     def __init__(self, ref: str, raw_conditions: dict | None = None):
         self._ref = ref
@@ -51,7 +111,7 @@ class Bench:
         from eos.const import ImplantLocation
         self._stack = contextlib.ExitStack()
         try:
-            scratch = self._stack.enter_context(evaluate.Scratch())
+            scratch = self._scratch = self._stack.enter_context(evaluate.Scratch())
             self.fit = scratch.add_fit(self._ref)
             # An EFT without implant lines leaves them on the character, where
             # edits to fit.implants would not count; the EFT is the whole truth.
@@ -61,13 +121,16 @@ class Bench:
             # must never have been deleted from the session in between.
             self._stack.enter_context(eos.db.saveddata_session.no_autoflush)
             self.fit.fill()
+            self._filter_skills()
         except BaseException:
             self._stack.close()
             raise
         self.spool = conditions.spool_of(self._cond)
+        self._pending: list = []  # (edit, undo) the last trial left on the fit
         return self
 
     def __exit__(self, *exc):
+        self._settle()
         return self._stack.__exit__(*exc)
 
     # --- places ------------------------------------------------------------
@@ -82,6 +145,7 @@ class Bench:
         return self.fit.implants if kind == "implant" else self.fit.boosters
 
     def occupant(self, where: tuple) -> tuple | None:
+        self._settle()
         kind, at = where
         if kind == "module":
             mod = self.fit.modules[at]
@@ -97,6 +161,10 @@ class Bench:
     # --- edits -------------------------------------------------------------
 
     def apply(self, edits) -> list:
+        self._settle()
+        return self._apply(edits)
+
+    def _apply(self, edits) -> list:
         undo: list = []
         try:
             for edit in edits:
@@ -186,15 +254,107 @@ class Bench:
             raise BenchError(f"Pyfa refused to project {self.name_of(edit.item_id)}")
         return command.Undo
 
+    # --- skills ------------------------------------------------------------
+
+    def _filter_skills(self) -> None:
+        """Pyfa runs all ~500 skills' effects on every recalc (~80% of one), yet a few
+        dozen touch any one fit. The skill table (below) says which skills touch each
+        item; a recalc runs only those for what is on the fit."""
+        char = self.fit.character
+        self._touching: list | None = None  # None: run every skill
+
+        def calc(inner, fit, runTime, forceProjected=False):
+            if forceProjected or fit is not self.fit or self._touching is None:
+                return inner(fit, runTime, forceProjected)
+            for skill in self._touching:
+                fit.register(skill)
+                skill.calculateModifiedAttributes(fit, runTime)
+
+        def clear(inner):
+            # Skill.clear only undoes Skill.suppress(), which Pyfa never calls; the
+            # skills about to run are cleared all the same.
+            if self._touching is None:
+                return inner()
+            for stuff in (*self._touching, *char.implants):
+                stuff.clear()
+
+        self._override(char, "calculateModifiedAttributes", calc)
+        self._override(char, "clear", clear)
+        self._stack.callback(save_table)
+
+    def _override(self, obj, name: str, method) -> None:
+        """obj.name = method(previous obj.name, ...) while the bench is open. The object
+        may be shared (Pyfa's All 5 character) with other fits and benches: method
+        hands what is not its own to the previous one."""
+        before = obj.__dict__.get(name)
+        inner = before or getattr(type(obj), name).__get__(obj)
+        setattr(obj, name, functools.partial(method, inner))
+
+        def restore():
+            if before is None:
+                obj.__dict__.pop(name, None)
+            else:
+                setattr(obj, name, before)
+        self._stack.callback(restore)
+
+    def _calculated(self):
+        """(table key, item) for everything on the fit that skills can modify."""
+        fit = self.fit
+        local = [[fit.ship], [fit.mode] if fit.mode is not None else [],
+                 [m for m in fit.modules if not m.isEmpty], fit.drones, fit.fighters,
+                 fit.appliedImplants, fit.boosters]
+        projected = [[m for m in fit.projectedModules if not m.isEmpty],
+                     fit.projectedDrones, fit.projectedFighters]
+        for prefix, groups in (("", local), ("p", projected)):
+            for group in groups:
+                for h in group:
+                    charge = getattr(h, "charge", None)
+                    yield (f"{prefix}{h.item.ID}" + (f"/{charge.ID}" if charge else ""), h)
+
+    def _calc(self) -> None:
+        """FitService.recalc, but with one clear: it clears the fit, then
+        calculateModifiedAttributes clears it again."""
+        from service.fit import Fit as FitService
+        self.fit.factorReload = FitService.getInstance().serviceFittingOptions[
+            "useGlobalForceReload"]
+        self.fit.calculated = False
+        self.fit.calculateModifiedAttributes()
+
+    def _recalc(self) -> None:
+        from eos.saveddata.character import Skill
+
+        table = _table()
+        on_fit = list(self._calculated())
+        if all(key in table for key, _ in on_fit):
+            needed = set().union(*(table[key] for key, _ in on_fit))
+            self._touching = [s for s in self.fit.character.skills if s.itemID in needed]
+            self._calc()
+            return
+        self._touching = None
+        self._calc()
+        for key, h in on_fit:
+            touched = set()
+            for attrs in (getattr(h, "itemModifiedAttributes", None),
+                          getattr(h, "chargeModifiedAttributes", None)):
+                for name in attrs.iterAfflictions() if attrs is not None else ():
+                    for afflictions in attrs.getAfflictions(name).values():
+                        touched.update(a[0].itemID for a in afflictions
+                                       if isinstance(a[0], Skill))
+            table[key] = _new[key] = frozenset(touched)
+
     # --- measuring ---------------------------------------------------------
 
     def measure(self, keys) -> dict:
-        from service.fit import Fit as FitService
-        FitService.getInstance().recalc(self.fit)
+        self._settle()
+        self._recalc()
         return stats.read(self.fit, list(keys), self.spool)
 
     def problems(self) -> list[str]:
         """Validity problems of the fit as last measured, plus activation limits."""
+        self._settle()
+        return self._problems()
+
+    def _problems(self) -> list[str]:
         from eos.const import FittingModuleState
 
         found = list(stats._validity(self.fit)["problems"])
@@ -206,26 +366,114 @@ class Bench:
         return found
 
     def trial(self, edits, keys) -> Trial:
+        """The fit with `edits` measured. The edits stay on the fit: the next trial
+        changes only the places it wants otherwise (a search moves one or two at a
+        time, of ~15), and every other method puts the fit back first."""
         try:
-            undo = self.apply(edits)
+            self._move_to(list(edits))
         except ValueError as exc:  # BenchError, or eos refusing an unsuitable item
             return Trial(None, [str(exc)], str(exc))
         try:
-            return Trial(self.measure(keys), self.problems())
+            self._recalc()
+            return Trial(stats.read(self.fit, list(keys), self.spool), self._problems())
         except Exception as exc:  # one candidate Pyfa chokes on must not sink a search
+            self._settle()
             return Trial(None, [], f"{type(exc).__name__}: {exc}")
-        finally:
-            self.revert(undo)
+
+    def run(self, trials: list, keys) -> list:
+        """Measure each (edits, extra conditions) trial. An extra is {"command": [...]}
+        (bursts, phenomena, a fleet): those fits boost this one for its trials."""
+        results: list = [None] * len(trials)
+        groups: dict[str, list[int]] = {}
+        for index, (_, extra) in enumerate(trials):
+            groups.setdefault(json.dumps(extra, sort_keys=True), []).append(index)
+        for key, indexes in groups.items():
+            extra = json.loads(key)
+            if extra is not None and set(extra) != {"command"}:
+                raise ValueError(f"extra conditions can only add command fits, not {sorted(extra)}")
+            try:
+                added = self._command([c["fit"] for c in (extra or {}).get("command", [])])
+            except Exception as exc:  # a command fit Pyfa will not take
+                for index in indexes:
+                    results[index] = Trial(None, [], f"{type(exc).__name__}: {exc}")
+                continue
+            try:
+                for index in indexes:
+                    results[index] = self.trial(trials[index][0], keys)
+            finally:
+                self._uncommand(added)
+        return results
+
+    def _command(self, fits: list[str]) -> list:
+        """Boost the fit by these command fits too; the commands, to undo."""
+        from eos.const import FittingModuleState
+        from gui.fitCommands.calc.commandFit.add import CalcAddCommandCommand
+
+        added: list = []
+        if not fits:
+            return added
+        self._settle()  # importing a fit commits: swapped-out modules must be back first
+        try:
+            for text in fits:
+                other = self._scratch.add_fit(text)
+                command = CalcAddCommandCommand(self.fit.ID, other.ID, FittingModuleState.ACTIVE)
+                if not command.Do():
+                    raise BenchError(f"Pyfa refused the command fit '{other.name}'")
+                added.append(command)
+        except BaseException:
+            self._uncommand(added)
+            raise
+        return added
+
+    def _uncommand(self, added: list) -> None:
+        if not added:
+            return
+        import eos.db
+        self._settle()
+        for command in reversed(added):
+            command.Undo()
+        eos.db.commit()
+        # The command fits still list the link just removed: reload them, so the
+        # scratch does not delete it a second time with them.
+        for command in added:
+            eos.db.saveddata_session.expire(eos.db.getFit(command.commandFitID))
+
+    def _settle(self) -> None:
+        """Back to the fit as opened."""
+        pending, self._pending = self._pending, []
+        self.revert([undo for _, undo in pending])
+
+    def _move_to(self, edits: list) -> None:
+        # Module places undo independently; implants and boosters undo by list
+        # position and projected modules by command, so those start from the fit as opened.
+        places = {e.where for e in edits}
+        if (len(places) < len(edits)
+                or any(e.where[0] != "module" for e in [*edits, *(e for e, _ in self._pending)])):
+            self._settle()
+        wanted = {e.where: e for e in edits}
+        keep = [(e, u) for e, u in self._pending if wanted.get(e.where) == e]
+        self.revert([u for e, u in self._pending if wanted.get(e.where) != e])
+        self._pending = keep
+        kept = {e.where for e, _ in keep}
+        todo = [e for e in edits if e.where not in kept]
+        try:
+            undo = self._apply(todo)
+        except BaseException:
+            self._settle()
+            raise
+        self._pending += list(zip(todo, undo))
 
     # --- export ------------------------------------------------------------
 
     def eft(self) -> str:
+        self._settle()
         return eft.export_fit(self.fit)
 
     def module_states(self) -> list[dict]:
         """module_states conditions that give this bench's states to its EFT."""
         from eos.const import FittingModuleState
 
+        self._settle()
         counts: dict[tuple, int] = {}
         for mod in self.fit.modules:
             if mod.isEmpty or mod.state == FittingModuleState.OFFLINE:
@@ -244,21 +492,6 @@ def merge_conditions(raw: dict | None, extra: dict | None) -> dict:
 
 
 def run_trials(ref: str, raw_conditions: dict | None, keys: list[str], trials: list) -> list:
-    """Measure each (edits, extra conditions) trial; one bench per distinct extra."""
-    results: list = [None] * len(trials)
-    groups: dict[str, list[int]] = {}
-    for index, (_, extra) in enumerate(trials):
-        groups.setdefault(json.dumps(extra, sort_keys=True), []).append(index)
-    for key, indexes in groups.items():
-        extra = json.loads(key)
-        try:
-            with Bench(ref, merge_conditions(raw_conditions, extra)) as b:
-                for index in indexes:
-                    results[index] = b.trial(trials[index][0], keys)
-        except Exception as exc:
-            if extra is None:
-                raise  # the fit itself is wrong: the caller's error
-            for index in indexes:
-                if results[index] is None:
-                    results[index] = Trial(None, [], f"{type(exc).__name__}: {exc}")
-    return results
+    """Measure each (edits, extra conditions) trial on one bench."""
+    with Bench(ref, raw_conditions) as b:
+        return b.run(trials, keys)

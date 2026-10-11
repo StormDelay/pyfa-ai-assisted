@@ -107,8 +107,8 @@ def test_a_worker_reuses_its_bench_across_jobs(zealot_eft, no_fits_left, no_kept
     assert pool._kept[1] is opened
 
 
-def test_a_new_fit_or_extra_conditions_drop_the_kept_bench(zealot_eft, no_fits_left,
-                                                           no_kept_bench):
+def test_a_new_fit_drops_the_kept_bench_and_extra_conditions_keep_it(
+        zealot_eft, no_fits_left, no_kept_bench):
     rifter = "[Rifter, x]\nDamage Control II\n"
     extra = [([], None), ([], {"command": [{"fit": wyvern.PHENOMENA}]})]
     fresh_rifter = bench.run_trials(rifter, None, KEYS, _empty(0))
@@ -118,7 +118,9 @@ def test_a_new_fit_or_extra_conditions_drop_the_kept_bench(zealot_eft, no_fits_l
     assert pool._work(rifter, None, KEYS, _empty(0)) == fresh_rifter
     assert pool._kept[1] is not opened and pool._kept[1]._ref == rifter
     assert pool._work(zealot_eft, None, KEYS, extra) == fresh_extra
-    assert pool._kept is None
+    opened = pool._kept[1]
+    assert pool._work(zealot_eft, None, KEYS, extra) == fresh_extra
+    assert pool._kept[1] is opened
 
 
 def test_a_failed_job_never_leaves_its_bench_behind(zealot_eft, no_fits_left, no_kept_bench,
@@ -187,3 +189,13 @@ def test_worker_dirs_are_per_server_and_only_dead_servers_are_swept(small_pool, 
         sibling.kill()
         sibling.wait()
         shutil.rmtree(base / str(sibling.pid), ignore_errors=True)
+
+
+def test_workers_save_what_they_learn_to_the_servers_skill_table(small_pool, no_fits_left):
+    import json
+
+    import eos.db
+    merlin = str(eos.db.getItem("Merlin").ID)
+    assert merlin not in bench._read_table()
+    pool.run("[Merlin, x]\n", None, KEYS, [([], None)])  # the worker's bench stays open
+    assert merlin in json.loads(bench._table_path().read_text())
