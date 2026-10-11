@@ -108,3 +108,29 @@ def test_implant_edit_on_a_bare_hull_is_measured(booted, no_fits_left):
         got, text = b.measure(KEYS), b.eft()
     assert got != base
     _same(got, _flat(evaluate.evaluate(text, None)))
+
+
+@pytest.mark.parametrize("character", [
+    {"base": "All 5", "alpha_clone": "Alpha Clone"},
+    {"base": "All 0", "skills": {"Shield Upgrades": 3, "Thermal Shield Compensation": 2,
+                                 "Acceleration Control": 4, "Afterburner": 3,
+                                 "Shield Rigging": 2}}])
+def test_bench_runs_the_skills_a_new_item_needs(booted, zealot_eft, character, no_fits_left):
+    """Skills that bonus an item by group, not by required skill, still apply to it
+    the first time it is measured and after (the bench skips untouched skills)."""
+    cond = {"character": character}
+    with bench.Bench(zealot_eft, cond) as b:
+        b.measure(KEYS)
+        mid = next(w for w in b.module_places() if b.rack(w) == "mid")
+        rig = next(w for w in b.module_places() if b.rack(w) == "rig")
+        for where, name in ((mid, "Thermal Shield Amplifier II"),
+                            (mid, "1MN Monopropellant Enduring Afterburner"),
+                            (rig, "Medium Core Defense Capacitor Safeguard II")):
+            edits = [bench.Edit(where, _id(name))]
+            first, again = b.trial(edits, KEYS), b.trial(edits, KEYS)
+            undo = b.apply(edits)
+            text = b.eft()
+            b.revert(undo)
+            want = _flat(evaluate.evaluate(text, cond))
+            _same(first.values, want)
+            _same(again.values, want)

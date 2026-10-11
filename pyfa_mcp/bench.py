@@ -61,6 +61,7 @@ class Bench:
             # must never have been deleted from the session in between.
             self._stack.enter_context(eos.db.saveddata_session.no_autoflush)
             self.fit.fill()
+            self._filter_skills()
         except BaseException:
             self._stack.close()
             raise
@@ -186,11 +187,76 @@ class Bench:
             raise BenchError(f"Pyfa refused to project {self.name_of(edit.item_id)}")
         return command.Undo
 
+    # --- skills ------------------------------------------------------------
+
+    def _filter_skills(self) -> None:
+        """Pyfa runs all ~500 skills' effects on every recalc (~80% of one), yet a few
+        dozen touch any one fit. A recalc with an item type this bench has not seen
+        runs them all and notes the skills that touched something (eos records each
+        modifier); other recalcs run only those. Skills bonus by group as well as by
+        required skill, so only a recalc can say which skills an item needs."""
+        char = self.fit.character
+        self._seen: set = set()     # (kind, item, charge) recalculated with every skill
+        self._needed: set = set()   # skills that touched something then
+        self._touching: list | None = None  # None: run every skill
+        before = char.__dict__.get("calculateModifiedAttributes")
+        # The character may be shared (Pyfa's All 5) with other fits and benches:
+        # their recalcs go on to what was there before.
+        inner = before or type(char).calculateModifiedAttributes.__get__(char)
+
+        def calc(fit, runTime, forceProjected=False):
+            if forceProjected or fit is not self.fit or self._touching is None:
+                return inner(fit, runTime, forceProjected)
+            for skill in self._touching:
+                fit.register(skill)
+                skill.calculateModifiedAttributes(fit, runTime)
+
+        def restore():
+            if before is None:
+                char.__dict__.pop("calculateModifiedAttributes", None)
+            else:
+                char.calculateModifiedAttributes = before
+
+        char.calculateModifiedAttributes = calc
+        self._stack.callback(restore)
+
+    def _calculated(self):
+        """Everything on the fit that skills can modify."""
+        fit = self.fit
+        yield fit.ship
+        if fit.mode is not None:
+            yield fit.mode
+        for group in (fit.modules, fit.projectedModules):
+            yield from (m for m in group if not m.isEmpty)
+        for group in (fit.drones, fit.fighters, fit.appliedImplants, fit.boosters,
+                      fit.projectedDrones, fit.projectedFighters):
+            yield from group
+
+    def _recalc(self) -> None:
+        from eos.saveddata.character import Skill
+        from service.fit import Fit as FitService
+
+        types = {(type(h).__name__, h.item.ID, getattr(getattr(h, "charge", None), "ID", None))
+                 for h in self._calculated()}
+        if types <= self._seen:
+            FitService.getInstance().recalc(self.fit)
+            return
+        self._touching = None
+        FitService.getInstance().recalc(self.fit)
+        touched = set()
+        for h in self._calculated():
+            for attrs in (getattr(h, "itemModifiedAttributes", None), getattr(h, "chargeModifiedAttributes", None)):
+                for key in attrs.iterAfflictions() if attrs is not None else ():
+                    for afflictions in attrs.getAfflictions(key).values():
+                        touched.update(a[0] for a in afflictions if isinstance(a[0], Skill))
+        self._seen |= types
+        self._needed |= touched
+        self._touching = [s for s in self.fit.character.skills if s in self._needed]
+
     # --- measuring ---------------------------------------------------------
 
     def measure(self, keys) -> dict:
-        from service.fit import Fit as FitService
-        FitService.getInstance().recalc(self.fit)
+        self._recalc()
         return stats.read(self.fit, list(keys), self.spool)
 
     def problems(self) -> list[str]:
