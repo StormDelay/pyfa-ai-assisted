@@ -187,3 +187,13 @@ def test_worker_dirs_are_per_server_and_only_dead_servers_are_swept(small_pool, 
         sibling.kill()
         sibling.wait()
         shutil.rmtree(base / str(sibling.pid), ignore_errors=True)
+
+
+def test_workers_save_what_they_learn_to_the_servers_skill_table(small_pool, no_fits_left):
+    import json
+
+    import eos.db
+    merlin = str(eos.db.getItem("Merlin").ID)
+    assert merlin not in bench._read_table()
+    pool.run("[Merlin, x]\n", None, KEYS, [([], None)])  # the worker's bench stays open
+    assert merlin in json.loads(bench._table_path().read_text())

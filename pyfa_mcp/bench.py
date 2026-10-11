@@ -2,14 +2,18 @@
 
 A Bench imports a fit once (conditions applied) into a temporary fit, then
 edits that live eos fit in place: replace a module, swap an implant,
-project a module. A measurement is one recalc, ~10 ms on a linked capital
-against ~75 ms for an import/evaluate/delete round trip. Callers re-run
+project a module. A measurement is one recalc, ~2-3 ms on a linked capital
+once the skill table knows its items, against ~75 ms for an import/evaluate/delete
+round trip. Callers re-run
 every fit they return through evaluate.evaluate; bench numbers only rank.
 """
 from __future__ import annotations
 
 import contextlib
+import functools
 import json
+import os
+from pathlib import Path
 from typing import NamedTuple
 
 from pyfa_mcp import conditions, eft, evaluate, stats
@@ -39,6 +43,62 @@ class Trial(NamedTuple):
 def _item(type_id: int):
     import eos.db
     return eos.db.getItem(type_id)
+
+
+# --- the skill table ---------------------------------------------------------
+# Item key ("<type id>", "<type id>/<charge id>", "p..." when projected) -> type IDs
+# of the skills whose effects touch it. A recalc with every skill fills it in from
+# what eos records as each attribute's modifiers; skills bonus by group as well as
+# by required skill, so only a recalc can say. No skill effect checks its own level
+# and eos records a modifier that changes nothing, so an entry holds for every
+# character. The table is kept in the server's data dir, per Pyfa version and client build.
+
+_SCHEMA = 1
+table_dir: Path | None = None  # pool workers: the server's data dir
+_touches: dict | None = None
+_new: dict = {}  # learned since the last save
+
+
+@functools.cache
+def _table_path() -> Path:
+    from pyfa_mcp import catalog, eosboot
+    base = table_dir or eosboot.booted_dir()
+    return base / (f"skill_touches-v{_SCHEMA}-{eosboot.pyfa_version()}-"
+                   f"{catalog.client_build()}.json")
+
+
+def _read_table() -> dict:
+    try:
+        data = json.loads(_table_path().read_text(encoding="utf-8"))
+        return {k: frozenset(v) for k, v in data.items()} if isinstance(data, dict) else {}
+    except (OSError, ValueError, TypeError):
+        return {}  # missing or damaged: learned again
+
+
+def _table() -> dict:
+    global _touches
+    if _touches is None:
+        _touches = _read_table()
+    return _touches
+
+
+def save_table() -> None:
+    """Merge what this process learned into the file. Processes racing may drop
+    each other's entries; those are only learned again."""
+    if not _new:
+        return
+    merged = {**_read_table(), **_new}
+    path = _table_path()
+    tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+    try:
+        tmp.write_text(json.dumps({k: sorted(v) for k, v in merged.items()}), encoding="utf-8")
+        os.replace(tmp, path)
+    except OSError:
+        with contextlib.suppress(OSError):
+            tmp.unlink(missing_ok=True)
+        return  # kept for this process only, tried again at the next save
+    _new.clear()
+    _table().update(merged)
 
 
 class Bench:
@@ -191,13 +251,9 @@ class Bench:
 
     def _filter_skills(self) -> None:
         """Pyfa runs all ~500 skills' effects on every recalc (~80% of one), yet a few
-        dozen touch any one fit. A recalc with an item type this bench has not seen
-        runs them all and notes the skills that touched something (eos records each
-        modifier); other recalcs run only those. Skills bonus by group as well as by
-        required skill, so only a recalc can say which skills an item needs."""
+        dozen touch any one fit. The skill table (below) says which skills touch each
+        item; a recalc runs only those for what is on the fit."""
         char = self.fit.character
-        self._seen: set = set()     # (kind, item, charge) recalculated with every skill
-        self._needed: set = set()   # skills that touched something then
         self._touching: list | None = None  # None: run every skill
         before = char.__dict__.get("calculateModifiedAttributes")
         # The character may be shared (Pyfa's All 5) with other fits and benches:
@@ -219,39 +275,44 @@ class Bench:
 
         char.calculateModifiedAttributes = calc
         self._stack.callback(restore)
+        self._stack.callback(save_table)
 
     def _calculated(self):
-        """Everything on the fit that skills can modify."""
+        """(table key, item) for everything on the fit that skills can modify."""
         fit = self.fit
-        yield fit.ship
-        if fit.mode is not None:
-            yield fit.mode
-        for group in (fit.modules, fit.projectedModules):
-            yield from (m for m in group if not m.isEmpty)
-        for group in (fit.drones, fit.fighters, fit.appliedImplants, fit.boosters,
-                      fit.projectedDrones, fit.projectedFighters):
-            yield from group
+        local = [[fit.ship], [fit.mode] if fit.mode is not None else [],
+                 [m for m in fit.modules if not m.isEmpty], fit.drones, fit.fighters,
+                 fit.appliedImplants, fit.boosters]
+        projected = [[m for m in fit.projectedModules if not m.isEmpty],
+                     fit.projectedDrones, fit.projectedFighters]
+        for prefix, groups in (("", local), ("p", projected)):
+            for group in groups:
+                for h in group:
+                    charge = getattr(h, "charge", None)
+                    yield (f"{prefix}{h.item.ID}" + (f"/{charge.ID}" if charge else ""), h)
 
     def _recalc(self) -> None:
         from eos.saveddata.character import Skill
         from service.fit import Fit as FitService
 
-        types = {(type(h).__name__, h.item.ID, getattr(getattr(h, "charge", None), "ID", None))
-                 for h in self._calculated()}
-        if types <= self._seen:
+        table = _table()
+        on_fit = list(self._calculated())
+        if all(key in table for key, _ in on_fit):
+            needed = set().union(*(table[key] for key, _ in on_fit))
+            self._touching = [s for s in self.fit.character.skills if s.itemID in needed]
             FitService.getInstance().recalc(self.fit)
             return
         self._touching = None
         FitService.getInstance().recalc(self.fit)
-        touched = set()
-        for h in self._calculated():
-            for attrs in (getattr(h, "itemModifiedAttributes", None), getattr(h, "chargeModifiedAttributes", None)):
-                for key in attrs.iterAfflictions() if attrs is not None else ():
-                    for afflictions in attrs.getAfflictions(key).values():
-                        touched.update(a[0] for a in afflictions if isinstance(a[0], Skill))
-        self._seen |= types
-        self._needed |= touched
-        self._touching = [s for s in self.fit.character.skills if s in self._needed]
+        for key, h in on_fit:
+            touched = set()
+            for attrs in (getattr(h, "itemModifiedAttributes", None),
+                          getattr(h, "chargeModifiedAttributes", None)):
+                for name in attrs.iterAfflictions() if attrs is not None else ():
+                    for afflictions in attrs.getAfflictions(name).values():
+                        touched.update(a[0].itemID for a in afflictions
+                                       if isinstance(a[0], Skill))
+            table[key] = _new[key] = frozenset(touched)
 
     # --- measuring ---------------------------------------------------------
 

@@ -110,12 +110,22 @@ def test_implant_edit_on_a_bare_hull_is_measured(booted, no_fits_left):
     _same(got, _flat(evaluate.evaluate(text, None)))
 
 
+@pytest.fixture
+def empty_table(monkeypatch, tmp_path):
+    path = tmp_path / "skill_touches.json"
+    monkeypatch.setattr(bench, "_touches", None)
+    monkeypatch.setattr(bench, "_new", {})
+    monkeypatch.setattr(bench, "_table_path", lambda: path)
+    return path
+
+
 @pytest.mark.parametrize("character", [
     {"base": "All 5", "alpha_clone": "Alpha Clone"},
     {"base": "All 0", "skills": {"Shield Upgrades": 3, "Thermal Shield Compensation": 2,
                                  "Acceleration Control": 4, "Afterburner": 3,
                                  "Shield Rigging": 2}}])
-def test_bench_runs_the_skills_a_new_item_needs(booted, zealot_eft, character, no_fits_left):
+def test_bench_runs_the_skills_a_new_item_needs(booted, zealot_eft, character, no_fits_left,
+                                               empty_table):
     """Skills that bonus an item by group, not by required skill, still apply to it
     the first time it is measured and after (the bench skips untouched skills)."""
     cond = {"character": character}
@@ -134,3 +144,24 @@ def test_bench_runs_the_skills_a_new_item_needs(booted, zealot_eft, character, n
             want = _flat(evaluate.evaluate(text, cond))
             _same(first.values, want)
             _same(again.values, want)
+
+
+def test_skill_table_is_saved_and_read_back(booted, zealot_eft, empty_table, no_fits_left):
+    with bench.Bench(zealot_eft) as b:
+        first = b.measure(KEYS)
+        assert b._touching is None  # learned with every skill
+        assert b.measure(KEYS) == first
+        assert 0 < len(b._touching) < 100
+    saved = json.loads(empty_table.read_text())
+    ship = str(_id("Zealot"))
+    assert saved[ship] and str(_id("Heat Sink II")) in saved
+    bench._touches = None  # a new process
+    with bench.Bench(zealot_eft) as b:
+        assert b.measure(KEYS) == first and b._touching is not None
+
+
+def test_damaged_skill_table_is_learned_again(booted, zealot_eft, empty_table, no_fits_left):
+    empty_table.write_text("{not json")
+    with bench.Bench(zealot_eft) as b:
+        b.measure(KEYS)
+    assert str(_id("Zealot")) in json.loads(empty_table.read_text())

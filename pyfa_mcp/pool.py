@@ -74,6 +74,13 @@ _kept: tuple | None = None  # in a worker: (key, open Bench) reused by the next 
 def _work(ref: str, raw_conditions: dict | None, keys: list[str], trials: list) -> list:
     """A worker's job. A search sends many jobs on one fit: the bench stays open
     between them (an import with conditions costs ~20 plain trials)."""
+    try:
+        return _measure(ref, raw_conditions, keys, trials)
+    finally:
+        bench.save_table()  # a kept bench never closes, and a worker can die idle
+
+
+def _measure(ref: str, raw_conditions: dict | None, keys: list[str], trials: list) -> list:
     global _kept
     key = json.dumps([ref, raw_conditions], sort_keys=True)
     extra = any(e is not None for _, e in trials)
@@ -116,7 +123,8 @@ def _start(new: bool) -> ProcessPoolExecutor | None:
             _executor = ProcessPoolExecutor(
                 max_workers=_size, mp_context=multiprocessing.get_context("spawn"),
                 initializer=_init_worker,
-                initargs=(os.getpid(), str(_own_dir()), str(pyfadata.pyfa_dir())))
+                initargs=(os.getpid(), str(_own_dir()), str(pyfadata.pyfa_dir()),
+                          str(eosboot.booted_dir())))
         return _executor
 
 
@@ -179,7 +187,7 @@ def shutdown() -> None:
         _stop(executor)
 
 
-def _init_worker(parent_pid: int, base: str, pyfa_dir: str) -> None:
+def _init_worker(parent_pid: int, base: str, pyfa_dir: str, server_dir: str) -> None:
     # The server's stdout is the MCP stream; Pyfa prints while it boots.
     devnull = os.open(os.devnull, os.O_WRONLY)
     try:
@@ -192,6 +200,7 @@ def _init_worker(parent_pid: int, base: str, pyfa_dir: str) -> None:
     threading.Thread(target=_exit_with, args=(parent_pid,), daemon=True).start()
     pyfadata.set_dir(Path(pyfa_dir))  # the user's own profiles resolve as in the server
     eosboot.boot(Path(base) / str(os.getpid()))
+    bench.table_dir = Path(server_dir)  # one skill table, shared with the server
 
 
 def _alive(pid: int) -> bool:
