@@ -270,6 +270,15 @@ def _editable(ref: str):
     return _find_stored(ref)
 
 
+def _needs(item, out: dict) -> dict:
+    """Every skill `item` needs to be trained at all, by type id, at the highest level."""
+    for req, level in item.requiredSkills.items():
+        if out.get(req.ID, 0) < level:
+            out[req.ID] = level
+            _needs(req, out)
+    return out
+
+
 def set_skills(ref: str, skills: dict) -> dict:
     """Pyfa's own editing: raising trains missing prerequisites; lowering untrains
     the skills that need it (Pyfa's strict skill levels)."""
@@ -285,6 +294,15 @@ def set_skills(ref: str, skills: dict) -> dict:
         if isinstance(level, bool) or not isinstance(level, int) or not 0 <= level <= 5:
             raise CharacterError(f"skills: {item.name} needs an integer 0-5, not {level!r}")
         asked[item.ID] = (item, level)
+    for item, level in asked.values():  # otherwise key order would pick the outcome
+        if not level:
+            continue
+        for req_id, need in _needs(item, {}).items():
+            if req_id in asked and asked[req_id][1] < need:
+                req, got = asked[req_id]
+                raise CharacterError(
+                    f"skills: {item.name} {level} needs {req.name} {need} or higher, but "
+                    f"{req.name} {got} was asked; ask for levels that go together")
     before = {s.itemID: s.level for s in char.skills}
     for item, level in asked.values():
         target = char.getSkill(item)

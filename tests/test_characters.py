@@ -307,3 +307,20 @@ def test_marginal_swaps_measure_with_the_character(booted, zealot_eft, no_fits_l
     assert result["applied"]["character"] == "custom (base All 0, 2 skills set)"
     # GUNS lacks Weapon Upgrades, Hull Upgrades, ...: those modules are never offered
     assert result["coverage"]["excluded"]["character lacks skills"] > 0
+
+
+@pytest.mark.parametrize("skills", [{"Medium Energy Turret": 3, "Gunnery": 1},
+                                    {"Gunnery": 1, "Medium Energy Turret": 3}])
+def test_set_skills_refuses_levels_that_cannot_go_together(stored, skills):
+    characters.copy_character("All 5", "Torn")
+    with pytest.raises(characters.CharacterError,
+                       match=r"Medium Energy Turret 3 needs Gunnery \d or higher"):
+        characters.set_skills("Torn", skills)
+    assert _level("Torn", "Gunnery") == 5 and _level("Torn", "Medium Energy Turret") == 5
+
+
+def test_optimize_fit_echoes_the_character_as_given(pyfa_alt, no_fits_left):
+    result = search.optimize_fit("[Rifter, r]\n", "offense.dps.total",
+                                 {"character": "pyfa:Home Alt"}, budget={"seconds": 5},
+                                 top_k=1)
+    assert result["best"][0]["conditions"]["character"] == "pyfa:Home Alt"

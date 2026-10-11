@@ -970,6 +970,14 @@ def _diff(first: dict, other: dict) -> dict:
             "diff": diff}
 
 
+def _as_given(cond: dict, given: dict | None) -> dict:
+    """Conditions to pass again: the character as the caller gave it, not the resolved
+    sheet (hundreds of skills for a stored or pyfa: character)."""
+    if given and "character" in given:
+        return {**cond, "character": given["character"]}
+    return cond
+
+
 def optimize_fit(fit: str, objective: str, raw_conditions: dict | None = None,
                  allow: dict | None = None, meta: list[str] | None = None,
                  locked: str | None = None, constraints: list | None = None,
@@ -1126,7 +1134,7 @@ def optimize_fit(fit: str, objective: str, raw_conditions: dict | None = None,
         entry.update(stats={k: flat[k] for k in shown if k in flat},
                      valid=bool(flat["validity.valid"]) and holds,
                      warnings=confirmed["result"]["warnings"],
-                     conditions=confirmed["conditions"])
+                     conditions=_as_given(confirmed["conditions"], raw_conditions))
         best.append(entry)
     if best:
         best[0]["polish"] = polish  # the pass ran from the top-ranked fit
