@@ -255,27 +255,40 @@ class Bench:
         item; a recalc runs only those for what is on the fit."""
         char = self.fit.character
         self._touching: list | None = None  # None: run every skill
-        before = char.__dict__.get("calculateModifiedAttributes")
-        # The character may be shared (Pyfa's All 5) with other fits and benches:
-        # their recalcs go on to what was there before.
-        inner = before or type(char).calculateModifiedAttributes.__get__(char)
 
-        def calc(fit, runTime, forceProjected=False):
+        def calc(inner, fit, runTime, forceProjected=False):
             if forceProjected or fit is not self.fit or self._touching is None:
                 return inner(fit, runTime, forceProjected)
             for skill in self._touching:
                 fit.register(skill)
                 skill.calculateModifiedAttributes(fit, runTime)
 
+        def clear(inner):
+            # Skill.clear only undoes Skill.suppress(), which Pyfa never calls; the
+            # skills about to run are cleared all the same.
+            if self._touching is None:
+                return inner()
+            for stuff in (*self._touching, *char.implants):
+                stuff.clear()
+
+        self._override(char, "calculateModifiedAttributes", calc)
+        self._override(char, "clear", clear)
+        self._stack.callback(save_table)
+
+    def _override(self, obj, name: str, method) -> None:
+        """obj.name = method(previous obj.name, ...) while the bench is open. The object
+        may be shared (Pyfa's All 5 character) with other fits and benches: method
+        hands what is not its own to the previous one."""
+        before = obj.__dict__.get(name)
+        inner = before or getattr(type(obj), name).__get__(obj)
+        setattr(obj, name, functools.partial(method, inner))
+
         def restore():
             if before is None:
-                char.__dict__.pop("calculateModifiedAttributes", None)
+                obj.__dict__.pop(name, None)
             else:
-                char.calculateModifiedAttributes = before
-
-        char.calculateModifiedAttributes = calc
+                setattr(obj, name, before)
         self._stack.callback(restore)
-        self._stack.callback(save_table)
 
     def _calculated(self):
         """(table key, item) for everything on the fit that skills can modify."""
@@ -291,19 +304,27 @@ class Bench:
                     charge = getattr(h, "charge", None)
                     yield (f"{prefix}{h.item.ID}" + (f"/{charge.ID}" if charge else ""), h)
 
+    def _calc(self) -> None:
+        """FitService.recalc, but with one clear: it clears the fit, then
+        calculateModifiedAttributes clears it again."""
+        from service.fit import Fit as FitService
+        self.fit.factorReload = FitService.getInstance().serviceFittingOptions[
+            "useGlobalForceReload"]
+        self.fit.calculated = False
+        self.fit.calculateModifiedAttributes()
+
     def _recalc(self) -> None:
         from eos.saveddata.character import Skill
-        from service.fit import Fit as FitService
 
         table = _table()
         on_fit = list(self._calculated())
         if all(key in table for key, _ in on_fit):
             needed = set().union(*(table[key] for key, _ in on_fit))
             self._touching = [s for s in self.fit.character.skills if s.itemID in needed]
-            FitService.getInstance().recalc(self.fit)
+            self._calc()
             return
         self._touching = None
-        FitService.getInstance().recalc(self.fit)
+        self._calc()
         for key, h in on_fit:
             touched = set()
             for attrs in (getattr(h, "itemModifiedAttributes", None),
