@@ -151,3 +151,24 @@ def test_instructions_explain_prices():
 def test_guide_no_longer_says_the_tools_cant_see_price():
     from pyfa_mcp import guide
     assert "can't see price" not in guide.GUIDE.read_text(encoding="utf-8")
+
+
+def test_character_tools(booted, zealot_eft, no_fits_left):
+    from mcp.server.mcpserver.exceptions import ToolError
+    assert [r["name"] for r in server.list_characters()][:2] == ["All 0", "All 5"]
+    server.copy_character("All 0", "Tool Alt")
+    try:
+        changed = server.set_skills("Tool Alt", {"Gunnery": 2})["changed"]
+        assert changed[0]["skill"] == "Gunnery"
+        assert server.get_character("Tool Alt")["skills"] == {"Gunnery": {"Gunnery": 2}}
+        result = server.evaluate_fit(zealot_eft, {"character": "Tool Alt"})
+        assert result["applied"]["character"] == "Tool Alt"
+    finally:
+        server.delete_character("Tool Alt")
+    with pytest.raises(ToolError, match="copy_character"):
+        server.set_skills("All 5", {"Gunnery": 1})
+
+
+def test_instructions_cover_characters():
+    text = server.INSTRUCTIONS
+    assert "list_characters" in text and "copy_character" in text and "sheet" in text

@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import json
 
-from pyfa_mcp import catalog, conditions, drift, eft, eosboot, notes, prices, stats, store
+from pyfa_mcp import catalog, characters, conditions, drift, eft, eosboot, notes, prices, stats, store
 
 # Keys of an evaluate result that are not stats.
 META_KEYS = ("fit", "ship", "applied", "warnings", "notes", "hull_bonuses", "price_source")
@@ -49,6 +49,7 @@ def _evaluate_parsed(ref: str, cond) -> dict:
         result = stats.fit_stats(fit, conditions.spool_of(cond))
         name, ship = fit.name, fit.ship.item.name
         effect_warnings = drift.effect_warnings(fit)
+        skill_warnings = characters.missing(fit)
         fit_notes = notes.for_fit(fit)
         bonuses = catalog.hull_bonuses(fit.ship.item)
         try:
@@ -56,7 +57,8 @@ def _evaluate_parsed(ref: str, cond) -> dict:
         except Exception as exc:  # a price problem never fails an evaluation
             price = {"total": None, "error": f"{type(exc).__name__}: {exc}"}
     return {"fit": name, "ship": ship, "applied": applied,
-            "warnings": warnings_for(result) + effect_warnings + store.pyfa_warnings(ref),
+            "warnings": warnings_for(result) + skill_warnings + effect_warnings
+                        + store.pyfa_warnings(ref),
             "notes": fit_notes, "hull_bonuses": bonuses, **result,
             "price": price, "price_source": prices.price_source()}
 

@@ -13,14 +13,18 @@ import functools
 from dataclasses import dataclass, field
 from typing import Callable
 
-from pyfa_mcp import pyfadata
+from pyfa_mcp import characters, pyfadata
 from pyfa_mcp.eft import suggest
 from pyfa_mcp.eosboot import TEMP_NOTE
 
 _DAMAGE_KEYS = ("em", "thermal", "kinetic", "explosive")
 _STATES = ("offline", "online", "active", "overheated")
 _FIELDS = {
-    "character": "Pilot skills. Only \"All 5\" in this version.",
+    "character": "Pilot skills: \"All 5\" (default), \"All 0\", a character stored here, "
+                 "or \"pyfa:<name>\" (list_characters); or a sheet {base: one of those "
+                 "(default \"All 5\"), skills: {skill: level 0-5}, alpha_clone?: "
+                 "\"Alpha Clone\", label?: its name in applied}. Only this fit uses it: "
+                 "command and projected fits fly at All 5.",
     "damage_profile": "Incoming damage for EHP: \"uniform\", a Pyfa built-in profile "
                       "name, one of the user's own Pyfa profiles (your_damage_profiles), "
                       "or {em, thermal, kinetic, explosive} weights.",
@@ -53,6 +57,7 @@ _EXAMPLES = [
     {"spool": "min", "target": {"resists": {"em": 0.5, "thermal": 0.5,
                                             "kinetic": 0.5, "explosive": 0.5},
                                 "signature": 125, "speed": 300}},
+    {"character": {"base": "pyfa:My Alt", "skills": {"Surgical Strike": 4}}},
 ]
 
 
@@ -62,7 +67,7 @@ class ConditionsError(ValueError):
 
 @dataclass(frozen=True)
 class Conditions:
-    character: str = "All 5"
+    character: str | dict = "All 5"
     damage_profile: str | dict = "uniform"
     target: str | dict | None = None
     module_states: tuple = ()
@@ -115,8 +120,24 @@ def parse(raw: dict | None) -> Conditions:
         raise ConditionsError(
             f"unknown condition '{name}'; known: {', '.join(_FIELDS)}")
 
-    if raw.get("character", "All 5") != "All 5":
-        raise ConditionsError("character: only \"All 5\" is supported in this version")
+    character = raw.get("character", "All 5")
+    if isinstance(character, dict):
+        extra = set(character) - set(characters.SHEET_KEYS)
+        if extra:
+            raise ConditionsError(f"character: unknown key '{sorted(extra)[0]}'; known: "
+                                  + ", ".join(characters.SHEET_KEYS))
+        if not isinstance(character.get("base", "All 5"), str):
+            raise ConditionsError("character.base must be a character name")
+        skills = character.get("skills", {})
+        if not isinstance(skills, dict) or not all(
+                isinstance(k, str) and isinstance(v, int) and not isinstance(v, bool)
+                and 0 <= v <= 5 for k, v in skills.items()):
+            raise ConditionsError("character.skills must be {skill name: level 0-5}")
+        for key in ("alpha_clone", "label"):
+            if character.get(key) is not None and not isinstance(character[key], str):
+                raise ConditionsError(f"character.{key} must be a string")
+    elif not isinstance(character, str):
+        raise ConditionsError("character must be a name or a {base, skills} sheet")
 
     spool = raw.get("spool")
     if spool == "min":
@@ -182,7 +203,7 @@ def parse(raw: dict | None) -> Conditions:
                               "e.g. \"Class 6 Pulsar Effects\"")
 
     return Conditions(
-        mode=mode, environment=environment, damage_profile=damage, target=target, module_states=states,
+        character=character, mode=mode, environment=environment, damage_profile=damage, target=target, module_states=states,
         spool=None if spool is None else float(spool),
         drug_side_effects=drugs, command=command, projected=projected,
         explicit=frozenset(raw))
@@ -439,6 +460,21 @@ def _apply_mode(fit, mode: str | None) -> str | None:
     return matches[0].item.name
 
 
+def _apply_character(fit, value) -> str:
+    """Give the fit the character; recalculated now, since the drones launched next
+    depend on skills."""
+    from service.fit import Fit as FitService
+    try:
+        sheet = characters.sheet(value)
+        char = characters.build(sheet)
+    except characters.CharacterError as exc:
+        raise ConditionsError(f"character: {exc}") from exc
+    if char is not None:
+        fit.character = char
+        FitService.getInstance().recalc(fit)
+    return sheet["label"]
+
+
 def _mark(value: str, key: str, cond: Conditions) -> str:
     return value if key in cond.explicit else f"{value} (default)"
 
@@ -446,6 +482,7 @@ def _mark(value: str, key: str, cond: Conditions) -> str:
 def apply(fit, cond: Conditions, add_fit: Callable) -> dict:
     from service.fit import Fit as FitService
 
+    character = _apply_character(fit, cond.character)
     fit.damagePattern = damage_pattern(cond)
     fit.targetProfile = target_profile(cond)
 
@@ -464,7 +501,9 @@ def apply(fit, cond: Conditions, add_fit: Callable) -> dict:
     target_label = ("none" if cond.target is None else
                     cond.target if isinstance(cond.target, str) else "custom target")
     return {
-        "character": _mark("All 5", "character", cond),
+        "character": _mark(character, "character", cond)
+                     + ("; command and projected fits: All 5"
+                        if cond.command or cond.projected else ""),
         "damage_profile": _mark(damage_label, "damage_profile", cond),
         "target": _mark(target_label, "target", cond),
         "module_states": states or _mark("as in the EFT", "module_states", cond),
@@ -517,8 +556,10 @@ def beyond_the_fit() -> dict:
         "heat": {"how": "module_states: [{module, state: \"overheated\"}]", "options": []},
         "mode_spool": {"how": "mode (tactical destroyers), spool (Triglavian weapons)",
                        "options": []},
-        "skills_damage_target": {"how": "character, damage_profile, target",
-                                 "options": "see damage_profiles and target_profiles"},
+        "skills_damage_target": {"how": "character (a name or a skill sheet), "
+                                        "damage_profile, target",
+                                 "options": "list_characters(); see damage_profiles "
+                                            "and target_profiles"},
         "drones_fighters": {"how": "EFT: 'Name xN' lines, launched up to bandwidth and skills",
                             "options": []},
     }
@@ -527,7 +568,10 @@ def beyond_the_fit() -> dict:
 def describe() -> dict:
     try:
         mine = {"your_damage_profiles": sorted(pyfadata.damage_profiles()),
-                "your_target_profiles": sorted(pyfadata.target_profiles())}
+                "your_target_profiles": sorted(pyfadata.target_profiles()),
+                "your_characters": sorted(
+                    c.savedName for c in pyfadata.characters()
+                    if c.savedName not in characters.BUILTINS) if pyfadata.installed() else []}
     except pyfadata.PyfaDataError as exc:
         mine = {"your_profiles_error": str(exc)}
     return {

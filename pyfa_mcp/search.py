@@ -14,7 +14,7 @@ import time
 from collections import Counter, OrderedDict
 from typing import NamedTuple
 
-from pyfa_mcp import (bench, candidates, conditions, drift, eft, evaluate, pool, prices,
+from pyfa_mcp import (bench, candidates, characters, conditions, drift, eft, evaluate, pool, prices,
                       pyfadata, stats, store)
 from pyfa_mcp.bench import Edit
 
@@ -82,6 +82,14 @@ def _portable(raw: dict | None) -> dict:
             raw[key] = [{**e, "fit": store.resolve_eft(e["fit"])}
                         if isinstance(e, dict) and isinstance(e.get("fit"), str) else e
                         for e in raw[key]]
+    if "character" in raw:
+        conditions.parse({"character": raw["character"]})  # shape errors first
+        try:
+            # A sheet: workers apply it without reading the user's Pyfa, and an
+            # edited character changes the trial cache key.
+            raw["character"] = characters.sheet(raw["character"])
+        except characters.CharacterError as exc:
+            raise conditions.ConditionsError(f"character: {exc}") from exc
     return raw
 
 
@@ -108,7 +116,8 @@ def _run(ref: str, raw: dict, keys: list[str], trials: list) -> list:
 
 def _pool(fit, sources: set[str], meta: list[str] | None, availability: str | None = None):
     subs = tuple(sorted(m.item.ID for m in fit.modules if not m.isEmpty and m.slot == 5))
-    key = (fit.ship.item.ID, subs, json.dumps(meta), tuple(sorted(sources)), availability)
+    key = (fit.ship.item.ID, subs, json.dumps(meta), tuple(sorted(sources)), availability,
+           characters.fingerprint(fit.character))
     return _cached(_POOLS, key, lambda: candidates.build(fit, sources, meta, availability))
 
 
@@ -961,6 +970,14 @@ def _diff(first: dict, other: dict) -> dict:
             "diff": diff}
 
 
+def _as_given(cond: dict, given: dict | None) -> dict:
+    """Conditions to pass again: the character as the caller gave it, not the resolved
+    sheet (hundreds of skills for a stored or pyfa: character)."""
+    if given and "character" in given:
+        return {**cond, "character": given["character"]}
+    return cond
+
+
 def optimize_fit(fit: str, objective: str, raw_conditions: dict | None = None,
                  allow: dict | None = None, meta: list[str] | None = None,
                  locked: str | None = None, constraints: list | None = None,
@@ -1117,7 +1134,7 @@ def optimize_fit(fit: str, objective: str, raw_conditions: dict | None = None,
         entry.update(stats={k: flat[k] for k in shown if k in flat},
                      valid=bool(flat["validity.valid"]) and holds,
                      warnings=confirmed["result"]["warnings"],
-                     conditions=confirmed["conditions"])
+                     conditions=_as_given(confirmed["conditions"], raw_conditions))
         best.append(entry)
     if best:
         best[0]["polish"] = polish  # the pass ran from the top-ranked fit
