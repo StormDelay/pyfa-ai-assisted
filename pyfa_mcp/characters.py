@@ -170,3 +170,23 @@ def build(s: dict):
     if s["alpha_clone"] is not None:
         char.alphaCloneID = _alpha(s["alpha_clone"]).ID
     return char
+
+
+def missing(fit) -> list[str]:
+    """What the fit needs that its character lacks, one line per item (Pyfa's own
+    check, which skips rigs)."""
+    from service.character import Character as CharacterService
+
+    char, out = fit.character, []
+    if char is None:
+        return out
+    for thing, needs in CharacterService.getInstance().checkRequirements(fit).items():
+        parts = []
+        for name, (level, skill_id, subs) in needs.items():
+            part = f"{name} {ROMAN[level]} (has {ROMAN[char.getSkill(skill_id).level]})"
+            if subs:
+                part += ", itself needing " + ", ".join(
+                    f"{n} {ROMAN[lvl]}" for n, (lvl, _, _) in subs.items())
+            parts.append(part)
+        out.append(f"{thing.name} needs " + "; ".join(parts))
+    return out

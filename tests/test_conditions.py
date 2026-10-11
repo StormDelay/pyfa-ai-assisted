@@ -39,7 +39,7 @@ def test_default_spool_is_pyfas(booted):
 
 @pytest.mark.parametrize("raw, message", [
     ({"bogus": 1}, "unknown condition 'bogus'"),
-    ({"character": "Bob"}, "All 5"),
+    ({"character": ["All 5"]}, "character must be a name"),
     ({"spool": 1.5}, "spool"),
     ({"spool": "average"}, "spool"),
     ({"damage_profile": {"em": 1}}, "damage_profile"),
