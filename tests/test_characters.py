@@ -171,3 +171,102 @@ def test_parse_rejects_bad_characters(raw, message):
 
 def test_conditions_format_lists_pyfa_characters(pyfa_alt):
     assert conditions.describe()["your_characters"] == ["Home Alt"]
+
+
+@pytest.fixture
+def stored(booted):
+    """Deletes the stored characters a test made."""
+    yield
+    for row in characters.list_characters():
+        if row["name"] not in characters.BUILTINS:
+            characters.delete_character(str(row["id"]))
+
+
+def _level(ref: str, name: str) -> int:
+    return characters.levels(characters.sheet(ref))[name]
+
+
+def test_server_list_starts_with_the_builtins(stored):
+    rows = characters.list_characters()
+    assert [r["name"] for r in rows] == ["All 0", "All 5"]
+    assert rows[0]["skill_points"] == 0 and rows[1]["skills_at_v"] > 300
+    with pytest.raises(characters.CharacterError, match="source"):
+        characters.list_characters("eve")
+
+
+def test_copy_from_pyfa_then_use_it(pyfa_alt, stored, zealot_eft, no_fits_left):
+    assert [r["name"] for r in characters.list_characters("pyfa")] == ["pyfa:Home Alt"]
+    row = characters.copy_character("pyfa:Home Alt", "Main")
+    assert row["name"] == "Main" and row["skill_points"] > 0
+    assert characters.sheet("main")["skills"] == {"Gunnery": 3, "Medium Energy Turret": 2}
+    assert _dps(zealot_eft, "Main") == _dps(zealot_eft, "pyfa:Home Alt")
+    assert characters.sheet(str(row["id"]))["label"] == "Main"  # by id too
+
+
+@pytest.mark.parametrize("name", ["", "  ", "All 5", "all 0", "pyfa:x", "12", TEMP_NOTE])
+def test_copy_refuses_names_that_shadow_other_forms(stored, name):
+    with pytest.raises(characters.CharacterError):
+        characters.copy_character("All 0", name)
+
+
+def test_copy_refuses_a_taken_name(stored):
+    characters.copy_character("All 0", "Alt")
+    with pytest.raises(characters.CharacterError, match="already named 'Alt'"):
+        characters.copy_character("All 5", "alt")
+
+
+def test_raising_a_skill_trains_its_prerequisites(stored):
+    characters.copy_character("All 0", "Fresh")
+    result = characters.set_skills("Fresh", {"Medium Energy Turret": 3})
+    by_skill = {c["skill"]: c for c in result["changed"]}
+    assert by_skill["Medium Energy Turret"] == {"skill": "Medium Energy Turret", "from": 0,
+                                                "to": 3, "why": "asked"}
+    assert by_skill["Gunnery"]["why"] == "prerequisite" and by_skill["Gunnery"]["to"] >= 1
+    assert _level("Fresh", "Medium Energy Turret") == 3
+
+
+def test_lowering_a_skill_untrains_what_needs_it(stored):
+    characters.copy_character("All 5", "Vet")
+    result = characters.set_skills("Vet", {"Gunnery": 1})
+    untrained = [c for c in result["changed"] if c["why"] != "asked"]
+    assert untrained and all(c["why"] == "untrained: needs a lowered skill" for c in untrained)
+    assert _level("Vet", "Medium Energy Turret") == 0
+
+
+@pytest.mark.parametrize("skills, message", [
+    ({"Gunnery": 4, "Gunery": 4}, "did you mean: Gunnery"),
+    ({"Gunnery": 4, "Rapid Firing": 6}, "integer 0-5"),
+    ({"Gunnery": 4, "Rapid Firing": True}, "integer 0-5"),
+    ({}, "non-empty"),
+])
+def test_a_bad_set_skills_changes_nothing(stored, skills, message):
+    characters.copy_character("All 0", "Careful")
+    with pytest.raises(characters.CharacterError, match=message):
+        characters.set_skills("Careful", skills)
+    assert _level("Careful", "Gunnery") == 0
+
+
+@pytest.mark.parametrize("ref", ["All 5", "pyfa:Home Alt"])
+def test_builtin_and_pyfa_characters_are_read_only(pyfa_alt, stored, ref):
+    for call in (lambda: characters.set_skills(ref, {"Gunnery": 1}),
+                 lambda: characters.delete_character(ref)):
+        with pytest.raises(characters.CharacterError, match="copy_character"):
+            call()
+
+
+def test_get_character(stored):
+    characters.copy_character("All 0", "Shown")
+    characters.set_skills("Shown", {"Gunnery": 2})
+    got = characters.get_character("Shown")
+    assert got["skills"] == {"Gunnery": {"Gunnery": 2}} and got["alpha_clone"] is None
+    group = characters.get_character("Shown", group="gunnery")
+    assert group["group"] == "Gunnery" and group["skills"]["Rapid Firing"] == 0
+    with pytest.raises(characters.CharacterError, match="groups: "):
+        characters.get_character("Shown", group="Gunnry")
+
+
+def test_delete(stored):
+    characters.copy_character("All 0", "Gone")
+    assert characters.delete_character("gone")["deleted"]["name"] == "Gone"
+    with pytest.raises(characters.CharacterError, match="no stored character named 'Gone'"):
+        characters.sheet("Gone")

@@ -190,3 +190,123 @@ def missing(fit) -> list[str]:
             parts.append(part)
         out.append(f"{thing.name} needs " + "; ".join(parts))
     return out
+
+
+_SP = (0, 250, 1415, 8000, 45255, 256000)  # skill points per rank at each level
+
+
+def _skill_points(lv: dict) -> int:
+    return sum(round(_SP[level] * (skill(name).getAttribute("skillTimeConstant") or 1))
+               for name, level in lv.items() if level)
+
+
+def _entry(ref_id, s: dict) -> dict:
+    lv = levels(s)
+    return {"id": ref_id, "name": s["label"],
+            "skills_at_v": sum(1 for v in lv.values() if v == 5),
+            "skill_points": _skill_points(lv), "alpha_clone": s["alpha_clone"]}
+
+
+def list_characters(source: str = "server") -> list[dict]:
+    if source == "server":
+        stored = [_entry(c.ID, _row_sheet(c, c.savedName)) for c in _stored()]
+        return ([_entry(b, _named(b)) for b in BUILTINS]
+                + sorted(stored, key=lambda e: e["name"].casefold()))
+    if source == "pyfa":
+        rows = [_entry(f"{PYFA_PREFIX}{c.ID}", _row_sheet(c, f"{PYFA_PREFIX}{c.savedName}"))
+                for c in pyfadata.characters() if c.savedName not in BUILTINS]
+        return sorted(rows, key=lambda e: e["name"].casefold())
+    raise CharacterError('source must be "server" or "pyfa"')
+
+
+def get_character(ref: str, group: str | None = None) -> dict:
+    s = _named(ref)
+    lv = levels(s)
+    by_group: dict[str, dict] = {}
+    for name, level in sorted(lv.items()):
+        by_group.setdefault(skill(name).group.name, {})[name] = level
+    head = {"name": s["label"], "alpha_clone": s["alpha_clone"],
+            "skill_points": _skill_points(lv)}
+    if group is None:
+        trained = {g: {n: lvl for n, lvl in skills.items() if lvl}
+                   for g, skills in sorted(by_group.items())}
+        return {**head, "skills": {g: v for g, v in trained.items() if v}}
+    found = next((g for g in by_group if g.casefold() == group.strip().casefold()), None)
+    if found is None:
+        raise CharacterError(f"no skill group '{group}'; groups: {', '.join(sorted(by_group))}")
+    return {**head, "group": found, "skills": by_group[found]}
+
+
+def _new_name(name: str) -> str:
+    name = (name or "").strip()
+    if not name:
+        raise CharacterError("a character needs a name")
+    if _builtin(name) or _pyfa_rest(name) is not None or name.isdigit() or name == TEMP_NOTE:
+        raise CharacterError(f"'{name}' cannot name a stored character: it reads as "
+                             "another kind of reference")
+    taken = next((c for c in _stored() if c.savedName.casefold() == name.casefold()), None)
+    if taken is not None:
+        raise CharacterError(f"a stored character is already named '{taken.savedName}'; "
+                             "delete it or pick another name")
+    return name
+
+
+def copy_character(ref: str, name: str) -> dict:
+    import eos.db
+    from eos.saveddata.character import Character
+    s = _named(ref)
+    char = Character(_new_name(name), None)
+    _set(char, {n: lvl for n, lvl in levels(s).items() if lvl})
+    if s["alpha_clone"] is not None:
+        char.alphaCloneID = _alpha(s["alpha_clone"]).ID
+    eos.db.save(char)
+    return _entry(char.ID, _row_sheet(char, char.savedName))
+
+
+def _editable(ref: str):
+    if _builtin(ref) or _pyfa_rest(ref) is not None:
+        raise CharacterError(f"'{ref.strip()}' is read-only; copy_character it to a new "
+                             "name and edit the copy")
+    return _find_stored(ref)
+
+
+def set_skills(ref: str, skills: dict) -> dict:
+    """Pyfa's own editing: raising trains missing prerequisites; lowering untrains
+    the skills that need it (Pyfa's strict skill levels)."""
+    import eos.db
+    from service.character import Character as CharacterService
+
+    char = _editable(ref)
+    if not isinstance(skills, dict) or not skills:
+        raise CharacterError("skills: a non-empty {skill name: level 0-5} object")
+    asked = {}
+    for name, level in skills.items():  # check everything before changing anything
+        item = skill(name)
+        if isinstance(level, bool) or not isinstance(level, int) or not 0 <= level <= 5:
+            raise CharacterError(f"skills: {item.name} needs an integer 0-5, not {level!r}")
+        asked[item.ID] = (item, level)
+    before = {s.itemID: s.level for s in char.skills}
+    for item, level in asked.values():
+        target = char.getSkill(item)
+        if level > target.level:
+            CharacterService._trainSkillReqs(char, target, True)
+        target.setLevel(level, persist=True)
+    eos.db.commit()
+    changed = []
+    for s in char.skills:
+        old, new = before.get(s.itemID, 0), s.level
+        if old != new and s.item is not None:
+            why = ("asked" if s.itemID in asked else
+                   "prerequisite" if new > old else "untrained: needs a lowered skill")
+            changed.append({"skill": s.item.name, "from": old, "to": new, "why": why})
+    return {"character": char.savedName,
+            "changed": sorted(changed, key=lambda c: c["skill"])}
+
+
+def delete_character(ref: str) -> dict:
+    import eos.db
+    char = _editable(ref)
+    entry = {"id": char.ID, "name": char.savedName}
+    eos.db.saveddata_session.delete(char)
+    eos.db.commit()
+    return {"deleted": entry}
