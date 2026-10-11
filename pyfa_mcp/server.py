@@ -17,7 +17,7 @@ from pathlib import Path
 from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 
-from pyfa_mcp import (catalog, conditions, drift, eft, eosboot, evaluate, graphs, guide, pool,
+from pyfa_mcp import (catalog, characters, conditions, drift, eft, eosboot, evaluate, graphs, guide, pool,
                       prices, pyfadata, register, search, store)
 
 INSTRUCTIONS = """\
@@ -32,6 +32,14 @@ pyfa-mcp computes EVE Online fits with Pyfa's own engine.
   (active, /OFFLINE honoured), Pyfa's default spool (full), no drug side
   effects, no command bursts, nothing projected. Set the conditions that
   matter for the user's question; call conditions_format() for the schema.
+- Skills: conditions.character defaults to All 5. For "my / my alt's
+  skills" pass the character: "pyfa:<name>" (list_characters(source="pyfa"))
+  or one stored here. For "what if I train X" pass a sheet {"base": ...,
+  "skills": {...}}; compare_fits variants compare several sheets in one
+  call. Say which character the numbers assume. A "needs ... (has ...)"
+  warning means that pilot cannot use the item. To keep skill changes,
+  copy_character, then set_skills; export_character_to_pyfa only when the
+  user explicitly asks.
 - Before building, optimizing or judging a fit, settle what it is for; ask
   the user when that isn't clear. For fleet fits and doctrines call
   fitting_guide with the role and whatever the user said about tank layer,
@@ -90,7 +98,7 @@ _data_dir: Path | None = None
 _boot_error: str | None = None
 _booted = False
 
-_USER_ERRORS = (eft.EftError, conditions.ConditionsError, store.StoreError,
+_USER_ERRORS = (eft.EftError, characters.CharacterError, conditions.ConditionsError, store.StoreError,
                 catalog.CatalogError, graphs.GraphError, pyfadata.PyfaDataError, pool.PoolError, ValueError)
 
 
@@ -182,7 +190,8 @@ def whats_new(category: str | None = None, limit: int = 30) -> dict:
 @app.tool()
 @_tool
 def evaluate_fit(fit: str, conditions: dict | None = None) -> dict:
-    """Full stats of one fit (EFT text or stored fit name/id) under conditions:
+    """Full stats of one fit (EFT text or stored fit name/id) under conditions
+    (skills: conditions.character):
     validity (cpu/pg/calibration/slots/hardpoints), tank (hp, ehp, resists,
     repair), offense (dps/volley), capacitor, navigation, targeting, drones,
     plus `applied`, `warnings`, `notes` (likely fitting mistakes) and
@@ -367,6 +376,61 @@ def refresh_prices() -> dict:
     when the user asks for fresh prices: they otherwise refresh in the
     background every 3 days. Waits up to about 30 seconds."""
     return prices.refresh()
+
+
+# --- characters --------------------------------------------------------------
+
+@app.tool()
+@_tool
+def list_characters(source: str = "server") -> list:
+    """Characters for conditions.character. source="server": All 0, All 5 and the
+    characters stored here (editable); source="pyfa": the user's own Pyfa characters
+    ("pyfa:<id>", read-only). Rows carry skills at V, skill points and alpha clone."""
+    return characters.list_characters(source)
+
+
+@app.tool()
+@_tool
+def get_character(character: str, group: str | None = None) -> dict:
+    """A character's trained skills by skill group; with `group` (e.g. "Gunnery"),
+    every skill in that group, untrained ones at 0."""
+    return characters.get_character(character, group)
+
+
+@app.tool()
+@_tool
+def copy_character(character: str, name: str) -> dict:
+    """Store a copy of a character under a new name, to edit with set_skills: import
+    one from the user's Pyfa ("pyfa:Main"), start from "All 0" or "All 5", or copy a
+    stored one. Copies skills and alpha clone, not implants."""
+    return characters.copy_character(character, name)
+
+
+@app.tool()
+@_tool
+def set_skills(character: str, skills: dict) -> dict:
+    """Set skill levels (0-5) on a stored character, e.g. {"Surgical Strike": 4}.
+    Raising a skill trains its missing prerequisites; lowering one untrains the
+    skills that need it, as in EVE. Returns every level that changed and why. For a
+    one-off "what if I train X", pass a sheet in conditions.character instead."""
+    return characters.set_skills(character, skills)
+
+
+@app.tool()
+@_tool
+def delete_character(character: str) -> dict:
+    """Delete a character stored here, by name or id. Built-in and Pyfa characters
+    are read-only."""
+    return characters.delete_character(character)
+
+
+@app.tool()
+@_tool
+def export_character_to_pyfa(character: str, name: str | None = None) -> dict:
+    """Write a character into the user's own Pyfa as a NEW character. Only when the
+    user explicitly asks. Refuses while Pyfa runs; backs up Pyfa's database first;
+    never overwrites (a taken name gets " (2)"). Returns its pyfa: id and the backup."""
+    return characters.export_character_to_pyfa(character, name)
 
 
 # --- storage -----------------------------------------------------------------
