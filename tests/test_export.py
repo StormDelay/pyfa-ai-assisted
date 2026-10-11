@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from pyfa_mcp import eft, pyfadata, store
+from pyfa_mcp import characters, eft, pyfadata, store
 
 
 @pytest.fixture(autouse=True)
@@ -21,7 +21,8 @@ def _refused(home: Path, match: str, call) -> None:
     """The call fails, Pyfa's file is byte-identical, and no backup was made."""
     db = home / "saveddata.db"
     before = _digest(db)
-    with pytest.raises((store.StoreError, pyfadata.PyfaDataError, eft.EftError), match=match):
+    with pytest.raises((store.StoreError, pyfadata.PyfaDataError, eft.EftError,
+                        characters.CharacterError), match=match):
         call()
     assert _digest(db) == before
     assert not list(home.glob("*backup*"))
@@ -85,3 +86,38 @@ def test_a_failed_write_leaves_no_backup(pyfa_home, zealot_eft, monkeypatch, no_
 
     monkeypatch.setattr(pyfadata, "_insert", locked)
     _refused(pyfa_home, "database is locked", lambda: store.export_to_pyfa(zealot_eft))
+
+
+def test_export_character_inserts_a_new_one_after_a_backup(pyfa_home):
+    before = _digest(pyfa_home / "saveddata.db")
+    result = characters.export_character_to_pyfa("All 0", "Fresh Alt")
+    assert result["name"] == "Fresh Alt" and result["id"].startswith("pyfa:")
+    assert _digest(Path(result["backup"])) == before
+    assert characters.sheet(result["id"])["skills"] == {}
+
+
+def test_export_character_carries_skills_and_never_overwrites(pyfa_home):
+    characters.copy_character("All 0", "Trained")
+    try:
+        characters.set_skills("Trained", {"Gunnery": 4})
+        first = characters.export_character_to_pyfa("Trained")
+        second = characters.export_character_to_pyfa("Trained")
+    finally:
+        characters.delete_character("Trained")
+    assert (first["name"], second["name"]) == ("Trained", "Trained (2)")
+    assert characters.sheet(second["id"])["skills"]["Gunnery"] == 4
+
+
+def test_export_character_refused_while_pyfa_runs(pyfa_home, monkeypatch):
+    monkeypatch.setattr(pyfadata, "_pyfa_running", lambda: True)
+    _refused(pyfa_home, "Pyfa is running",
+             lambda: characters.export_character_to_pyfa("All 5", "X"))
+
+
+def test_export_character_refused_on_another_schema_version(pyfa_home):
+    with contextlib.closing(sqlite3.connect(pyfa_home / "saveddata.db")) as db:
+        from eos.db import migration
+        db.execute(f"PRAGMA user_version = {migration.getAppVersion() - 1}")
+        db.commit()
+    _refused(pyfa_home, "character editor",
+             lambda: characters.export_character_to_pyfa("All 5", "X"))

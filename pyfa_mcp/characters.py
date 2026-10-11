@@ -310,3 +310,11 @@ def delete_character(ref: str) -> dict:
     eos.db.saveddata_session.delete(char)
     eos.db.commit()
     return {"deleted": entry}
+
+
+def export_character_to_pyfa(ref: str, name: str | None = None) -> dict:
+    s = _named(ref)
+    by_id = {skill(n).ID: lvl for n, lvl in levels(s).items() if lvl}
+    alpha = _alpha(s["alpha_clone"]).ID if s["alpha_clone"] is not None else None
+    wanted = (name or "").strip() or s["label"].removeprefix(PYFA_PREFIX)
+    return pyfadata.export_character(by_id, alpha, wanted)

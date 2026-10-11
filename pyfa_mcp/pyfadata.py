@@ -171,9 +171,8 @@ def _pyfa_running() -> bool:
                           stdin=subprocess.DEVNULL).returncode == 0
 
 
-def _free_name(session, wanted: str) -> str:
-    from eos.saveddata.fit import Fit
-    taken = {name.casefold() for (name,) in session.query(Fit.name)}
+def _free_name(taken, wanted: str) -> str:
+    taken = {name.casefold() for name in taken}
     name, n = wanted, 2
     while name.casefold() in taken:
         name, n = f"{wanted} ({n})", n + 1
@@ -185,16 +184,14 @@ def _insert(session, fit) -> None:
     session.commit()
 
 
-def export_fit(eft_text: str, name: str | None = None) -> dict:
-    """Insert eft_text as a new fit in the user's Pyfa. Never changes an existing row.
+def _export(make, fallback: str) -> dict:
+    """Insert one new row into the user's Pyfa; never changes an existing one.
 
-    The caller has already checked the EFT strictly (store.export_to_pyfa).
+    Refuses while Pyfa runs or on another schema version (`fallback` says what the
+    user can do instead), backs Pyfa's file up first, and removes the backup when
+    the write failed. make(session) -> (row, entry(row) -> dict).
     """
-    from eos.const import ImplantLocation
     from eos.db import migration
-    from eos.saveddata.character import Character
-    from eos.saveddata.damagePattern import DamagePattern
-    from service.port import Port
     from sqlalchemy import create_engine
     from sqlalchemy.orm import Session
 
@@ -209,36 +206,67 @@ def export_fit(eft_text: str, name: str | None = None) -> dict:
         if have != want:
             raise PyfaDataError(
                 f"not exported: the user's Pyfa database is version {have}, but Pyfa "
-                f"{eosboot.pyfa_version()} inside pyfa-mcp writes version {want}. Give the "
-                "user the EFT text (get_fit) to import in Pyfa instead")
+                f"{eosboot.pyfa_version()} inside pyfa-mcp writes version {want}. {fallback}")
         with Session(bind=engine, autoflush=False, expire_on_commit=False) as session:
-            all5 = session.query(Character).filter(Character.savedName == "All 5").first()
-            if all5 is None:
-                raise PyfaDataError("the user's Pyfa database has no 'All 5' character; "
-                                    "start Pyfa once, close it, and export again")
-            fit = Port.importAuto(eft_text)[2][0]
-            fit.name = _free_name(session, name or fit.name)
-            # Fields Port.importFitFromBuffer sets on an import; here fixed to
-            # All 5, uniform damage, no target and the EFT's own implants,
-            # rather than the user's Pyfa defaults.
-            fit.character = all5
-            fit.damagePattern = DamagePattern.getDefaultBuiltin()
-            fit.implantLocation = ImplantLocation.FIT
+            row, entry = make(session)
             stamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
             backup = db.with_name(f"saveddata_pyfa-mcp-backup_{stamp}.db")
             # Pyfa is not running, so a plain copy is exact (as Pyfa's own
             # migration backups are): restoring is a rename.
             shutil.copy2(db, backup)
             try:
-                _insert(session, fit)
+                _insert(session, row)
             except Exception as exc:
                 session.rollback()
                 backup.unlink(missing_ok=True)  # nothing changed: nothing to restore
                 raise PyfaDataError(f"not exported, nothing was changed: {exc}") from exc
-            return {"id": f"pyfa:{fit.ID}", "name": fit.name,
-                    "ship": fit.ship.item.name, "backup": str(backup)}
+            return {**entry(row), "backup": str(backup)}
     finally:
         engine.dispose()
+
+
+def export_fit(eft_text: str, name: str | None = None) -> dict:
+    """Insert eft_text as a new fit in the user's Pyfa. Never changes an existing row.
+
+    The caller has already checked the EFT strictly (store.export_to_pyfa).
+    """
+    from eos.const import ImplantLocation
+    from eos.saveddata.character import Character
+    from eos.saveddata.damagePattern import DamagePattern
+    from eos.saveddata.fit import Fit
+    from service.port import Port
+
+    def make(session):
+        all5 = session.query(Character).filter(Character.savedName == "All 5").first()
+        if all5 is None:
+            raise PyfaDataError("the user's Pyfa database has no 'All 5' character; "
+                                "start Pyfa once, close it, and export again")
+        fit = Port.importAuto(eft_text)[2][0]
+        fit.name = _free_name((n for (n,) in session.query(Fit.name)), name or fit.name)
+        # Fields Port.importFitFromBuffer sets on an import; here fixed to
+        # All 5, uniform damage, no target and the EFT's own implants,
+        # rather than the user's Pyfa defaults.
+        fit.character = all5
+        fit.damagePattern = DamagePattern.getDefaultBuiltin()
+        fit.implantLocation = ImplantLocation.FIT
+        return fit, lambda f: {"id": f"pyfa:{f.ID}", "name": f.name, "ship": f.ship.item.name}
+
+    return _export(make, "Give the user the EFT text (get_fit) to import in Pyfa instead")
+
+
+def export_character(levels: dict[int, int], alpha_clone_id: int | None, name: str) -> dict:
+    """Insert a new character in the user's Pyfa: skills by type id, under a free name."""
+    from eos.saveddata.character import Character
+
+    def make(session):
+        taken = (n for (n,) in session.query(Character.savedName))
+        char = Character(_free_name(taken, name), None)
+        for skill_id, level in levels.items():
+            char.getSkill(skill_id).setLevel(level, persist=True, ignoreRestrict=True)
+        char.alphaCloneID = alpha_clone_id
+        return char, lambda c: {"id": f"pyfa:{c.ID}", "name": c.savedName}
+
+    return _export(make, "Set the skills in Pyfa's character editor instead")
 
 
 def left_out(fit) -> list[str]:
