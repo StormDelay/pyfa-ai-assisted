@@ -270,3 +270,40 @@ def test_delete(stored):
     assert characters.delete_character("gone")["deleted"]["name"] == "Gone"
     with pytest.raises(characters.CharacterError, match="no stored character named 'Gone'"):
         characters.sheet("Gone")
+
+
+from pyfa_mcp import bench, candidates, search  # noqa: E402
+
+NO_MET_V = {"skills": {"Medium Energy Turret": 4}}
+
+
+def test_search_sends_workers_a_sheet(pyfa_alt):
+    assert search._portable({"character": "pyfa:Home Alt"})["character"] == \
+        characters.sheet("pyfa:Home Alt")
+    with pytest.raises(conditions.ConditionsError, match="character must be a name"):
+        search._portable({"character": 7})
+
+
+def _pool(zealot_eft, character, availability=None):
+    with bench.Bench(zealot_eft, {"character": character}) as b:
+        return candidates.build(b.fit, {"module"}, None, availability)
+
+
+def test_the_pool_leaves_out_what_the_character_cannot_use(booted, zealot_eft, no_fits_left):
+    pool = _pool(zealot_eft, NO_MET_V)
+    names = {c.name for c in pool.candidates}
+    assert "Heavy Pulse Laser II" not in names and "Heavy Pulse Laser I" in names
+    assert {"name": "Heavy Pulse Laser II", "group": "Energy Weapon",
+            "reason": "character lacks skills"} in pool.excluded
+    assert "lacks skills" in pool.availability_note
+    assert "Heavy Pulse Laser II" in {c.name for c in _pool(zealot_eft, NO_MET_V, "all").candidates}
+    assert "Heavy Pulse Laser II" in {c.name for c in _pool(zealot_eft, "All 5").candidates}
+
+
+def test_marginal_swaps_measure_with_the_character(booted, zealot_eft, no_fits_left):
+    result = search.marginal_swaps(zealot_eft, "offense.dps.total", {"character": GUNS},
+                                   top_n=3)
+    assert result["baseline"] == pytest.approx(_dps(zealot_eft, GUNS))
+    assert result["applied"]["character"] == "custom (base All 0, 2 skills set)"
+    # GUNS lacks Weapon Upgrades, Hull Upgrades, ...: those modules are never offered
+    assert result["coverage"]["excluded"]["character lacks skills"] > 0

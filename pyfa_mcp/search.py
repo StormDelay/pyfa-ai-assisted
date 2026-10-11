@@ -14,7 +14,7 @@ import time
 from collections import Counter, OrderedDict
 from typing import NamedTuple
 
-from pyfa_mcp import (bench, candidates, conditions, drift, eft, evaluate, pool, prices,
+from pyfa_mcp import (bench, candidates, characters, conditions, drift, eft, evaluate, pool, prices,
                       pyfadata, stats, store)
 from pyfa_mcp.bench import Edit
 
@@ -82,6 +82,14 @@ def _portable(raw: dict | None) -> dict:
             raw[key] = [{**e, "fit": store.resolve_eft(e["fit"])}
                         if isinstance(e, dict) and isinstance(e.get("fit"), str) else e
                         for e in raw[key]]
+    if "character" in raw:
+        conditions.parse({"character": raw["character"]})  # shape errors first
+        try:
+            # A sheet: workers apply it without reading the user's Pyfa, and an
+            # edited character changes the trial cache key.
+            raw["character"] = characters.sheet(raw["character"])
+        except characters.CharacterError as exc:
+            raise conditions.ConditionsError(f"character: {exc}") from exc
     return raw
 
 
@@ -108,7 +116,8 @@ def _run(ref: str, raw: dict, keys: list[str], trials: list) -> list:
 
 def _pool(fit, sources: set[str], meta: list[str] | None, availability: str | None = None):
     subs = tuple(sorted(m.item.ID for m in fit.modules if not m.isEmpty and m.slot == 5))
-    key = (fit.ship.item.ID, subs, json.dumps(meta), tuple(sorted(sources)), availability)
+    key = (fit.ship.item.ID, subs, json.dumps(meta), tuple(sorted(sources)), availability,
+           characters.fingerprint(fit.character))
     return _cached(_POOLS, key, lambda: candidates.build(fit, sources, meta, availability))
 
 

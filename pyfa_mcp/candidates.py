@@ -6,7 +6,7 @@ import inspect
 import re
 from dataclasses import dataclass
 
-from pyfa_mcp import catalog
+from pyfa_mcp import catalog, characters
 from pyfa_mcp.bench import SLOT_LABELS, Edit
 
 SOURCES = ("module", "rig", "subsystem", "charge", "implant", "booster",
@@ -291,6 +291,11 @@ def build(fit, sources: set[str], meta: list[str] | None,
     allowed, note = meta_filter(meta)
     open_, availability_note = availability_filter(availability)
     ok = item_filter(meta, availability)
+    usable = characters.usable(fit.character) if availability != "all" else None
+    charge_ok = ok if usable is None else (lambda c: ok(c) and usable(c))
+    if usable is not None:
+        availability_note += ("; items the character lacks skills for are left out too "
+                              "(availability=\"all\" includes them)")
     found: list[Candidate] = []
     excluded: list[dict] = []
     items = catalog.published_items(categories=("Module", "Subsystem", "Implant"))
@@ -301,6 +306,9 @@ def build(fit, sources: set[str], meta: list[str] | None,
             continue
         if not open_(item):
             excluded.append(_excluded(item, catalog.limits(item)[0]))
+            continue
+        if usable is not None and not usable(item):
+            excluded.append(_excluded(item, "character lacks skills"))
             continue
         if item.category.name == "Implant":
             found += _pod(item, sources)
@@ -321,7 +329,7 @@ def build(fit, sources: set[str], meta: list[str] | None,
         if source in sources:
             found.append(_local(item, source, slot))
         if wants_charges:
-            found += [_local(item, "charge", slot, c) for c in _charges(item, ok)]
+            found += [_local(item, "charge", slot, c) for c in _charges(item, charge_ok)]
     scanned = len(items)
     if "command_burst" in sources:
         found += _bursts(ok)

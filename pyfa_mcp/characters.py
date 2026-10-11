@@ -318,3 +318,20 @@ def export_character_to_pyfa(ref: str, name: str | None = None) -> dict:
     alpha = _alpha(s["alpha_clone"]).ID if s["alpha_clone"] is not None else None
     wanted = (name or "").strip() or s["label"].removeprefix(PYFA_PREFIX)
     return pyfadata.export_character(by_id, alpha, wanted)
+
+
+def _plain(char) -> bool:
+    return char is None or char.savedName == "All 5"
+
+
+def usable(char):
+    """Whether `char` has an item's own required skills; None when every item is usable."""
+    if _plain(char):
+        return None
+    return lambda item: all(char.getSkill(req).level >= level
+                            for req, level in item.requiredSkills.items())
+
+
+def fingerprint(char) -> tuple | None:
+    """The character's levels, for cache keys; None for All 5."""
+    return None if _plain(char) else tuple(sorted((s.itemID, s.level) for s in char.skills))
