@@ -49,11 +49,13 @@ names are unique; `All 0` and `All 5` are reserved.
 Every reference resolves to plain data before an evaluation:
 
 ```python
-{"name": "Main", "skills": {"Gunnery": 5, ...}, "alpha_clone": None | "Amarr Alpha"}
+{"base": "All 0" | "All 5", "skills": {"Gunnery": 5, ...},
+ "alpha_clone": None | "Alpha Clone", "label": "pyfa:Main"}
 ```
 
-`skills` holds every skill with a level (unlearned skills are absent, i.e.
-0). An evaluation builds a temporary Pyfa `Character` from it in the
+This is the inline skill sheet below with a built-in base, so a resolved
+character is itself a valid `character` condition. A stored or Pyfa
+character becomes base `All 0` plus every skill it has trained. An evaluation builds a temporary Pyfa `Character` from it in the
 server's saveddata.db, named with `TEMP_NOTE`, sets it as the temporary
 fit's character, and deletes it on exit (`evaluate.Scratch`); boot purges
 leftovers as it does temporary fits and profiles. Search workers receive the
@@ -113,7 +115,8 @@ Prerequisites of a missing skill are listed under it only one level deep.
   prerequisites (Pyfa's `_trainSkillReqs`); lowering one lowers the skills
   that need it (Pyfa's strict skill levels). Returns every level that
   changed, the requested ones and the cascaded ones, as
-  `[{skill, from, to, why: "asked" | "prerequisite of X" | "needs X"}]`.
+  `[{skill, from, to, why: "asked" | "prerequisite" | "untrained: needs a
+  lowered skill"}]`.
 - `delete_character(character)` — stored characters only.
 - `export_character_to_pyfa(character, name=None)` — insert the character
   into the user's Pyfa as a new row under a free name (`Main (2)`), with its
