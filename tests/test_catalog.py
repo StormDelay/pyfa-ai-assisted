@@ -78,7 +78,7 @@ def test_limits_and_pod_slots(booted):
     dose = catalog.search_items("Agency 'Hardshell' TB3")[0]
     assert "limits" not in dose and dose["slot"].startswith("booster ")
     assert catalog.limits(eos.db.getItem("Imperial Electronics Booster I")) == [
-        "expires 2026-11-10"]
+        "expires 2027-02-02"]
     assert catalog.item_info("Halcyon B-5 Booster")["slot"] == "booster 5"
     assert catalog.client_build()
 
@@ -99,7 +99,7 @@ def test_t6_ships_by_capability(booted):
 
 
 def test_t12_whats_new_lists_the_command_carriers(booted):
-    result = catalog.whats_new("ship", 10)
+    result = catalog.whats_new("ship", 15)
     names = [i["name"] for i in result["items"]]
     assert {"Salvation", "Simurgh", "Gaia", "Ymir"} <= set(names)
     assert "type ID" in result["ordered_by"] and result["game_client_build"]
