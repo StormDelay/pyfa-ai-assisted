@@ -1,3 +1,6 @@
+import re
+import types
+
 import pytest
 
 from pyfa_mcp import catalog
@@ -77,8 +80,11 @@ def test_limits_and_pod_slots(booted):
         "Serenity only", "characters under 100 days"]
     dose = catalog.search_items("Agency 'Hardshell' TB3")[0]
     assert "limits" not in dose and dose["slot"].startswith("booster ")
-    assert catalog.limits(eos.db.getItem("Imperial Electronics Booster I")) == [
-        "expires 2027-02-02"]
+    [expiry] = catalog.limits(eos.db.getItem("Imperial Electronics Booster I"))
+    assert re.fullmatch(r"expires \d{4}-\d{2}-\d{2}", expiry)  # CCP moves the date
+    stub = types.SimpleNamespace(ID=-1, name="stub", getAttribute=lambda a: (
+        20000 if a == "boosterLastInjectionDatetime" else None))
+    assert catalog.limits(stub) == ["expires 2024-10-04"]
     assert catalog.item_info("Halcyon B-5 Booster")["slot"] == "booster 5"
     assert catalog.client_build()
 
@@ -98,10 +104,12 @@ def test_t6_ships_by_capability(booted):
         catalog.list_ships(can_fit="Comand Brust")
 
 
-def test_t12_whats_new_lists_the_command_carriers(booted):
-    result = catalog.whats_new("ship", 15)
-    names = [i["name"] for i in result["items"]]
-    assert {"Salvation", "Simurgh", "Gaia", "Ymir"} <= set(names)
+def test_t12_whats_new_lists_the_newest_ships_first(booted):
+    result = catalog.whats_new("ship", 10)
+    ids = [i["type_id"] for i in result["items"]]
+    assert len(ids) == 10 and ids == sorted(ids, reverse=True)
+    assert {i["category"] for i in result["items"]} == {"Ship"}
+    assert ids[0] == max(i.ID for i in catalog.published_items(categories=("Ship",)))
     assert "type ID" in result["ordered_by"] and result["game_client_build"]
     assert len(catalog.whats_new(limit=5)["items"]) == 5
 
