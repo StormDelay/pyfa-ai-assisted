@@ -612,7 +612,7 @@ wheels = [
 
 [[package]]
 name = "pyfa-mcp"
-version = "0.6.3"
+version = "0.6.4"
 source = { editable = "." }
 dependencies = [
     { name = "beautifulsoup4" },
